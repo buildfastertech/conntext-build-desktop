@@ -1,0 +1,88 @@
+@import 'tailwindcss';
+
+@theme {
+  --color-brand-bg: #0a0a0b;
+  --color-brand-card: #141416;
+  --color-brand-card-elevated: #1a1a1e;
+  --color-brand-border: #232326;
+  --color-brand-border-subtle: #1c1c1f;
+  --color-brand-purple: #8b5cf6;
+  --color-brand-purple-soft: #a78bfa;
+  --color-brand-purple-dim: #7c3aed;
+  --color-brand-text: #f0f0f2;
+  --color-brand-text-secondary: #c4c4cc;
+  --color-brand-text-muted: #8e9299;
+  --color-brand-text-dim: #55565e;
+  --color-brand-success: #22c55e;
+  --color-brand-error: #ef4444;
+  --color-brand-input: #111113;
+  --color-brand-input-border: #2a2a2f;
+  --color-brand-input-focus: #8b5cf6;
+}
+
+@font-face {
+  font-family: 'ConnText Display';
+  src: local('SF Pro Display'), local('Segoe UI'), local('system-ui');
+  font-weight: 100 900;
+}
+
+body {
+  margin: 0;
+  padding: 0;
+  background-color: var(--color-brand-bg);
+  color: var(--color-brand-text);
+  font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', system-ui, sans-serif;
+  overflow: hidden;
+  user-select: none;
+  -webkit-app-region: drag;
+  -webkit-font-smoothing: antialiased;
+  -moz-osx-font-smoothing: grayscale;
+}
+
+input, textarea, button, a, select, [role="button"] {
+  -webkit-app-region: no-drag;
+}
+
+/* Custom scrollbar matching brand */
+::-webkit-scrollbar {
+  width: 5px;
+}
+::-webkit-scrollbar-track {
+  background: transparent;
+}
+::-webkit-scrollbar-thumb {
+  background: var(--color-brand-border);
+  border-radius: 5px;
+}
+* {
+  scrollbar-width: thin;
+  scrollbar-color: var(--color-brand-border) transparent;
+}
+
+/* Ambient glow keyframes */
+@keyframes ambient-pulse {
+  0%, 100% { opacity: 0.3; transform: scale(1); }
+  50% { opacity: 0.5; transform: scale(1.05); }
+}
+
+@keyframes fade-in-up {
+  from { opacity: 0; transform: translateY(12px); }
+  to { opacity: 1; transform: translateY(0); }
+}
+
+@keyframes fade-in {
+  from { opacity: 0; }
+  to { opacity: 1; }
+}
+
+.animate-fade-in-up {
+  animation: fade-in-up 0.5s ease-out forwards;
+}
+
+.animate-fade-in {
+  animation: fade-in 0.4s ease-out forwards;
+}
+
+.animate-ambient-pulse {
+  animation: ambient-pulse 4s ease-in-out infinite;
+}
