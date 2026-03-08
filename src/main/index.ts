@@ -1,4 +1,4 @@
-import { app, BrowserWindow, ipcMain, dialog } from 'electron'
+import { app, BrowserWindow, ipcMain, dialog, Menu } from 'electron'
 import { join } from 'path'
 import { readFile, writeFile, mkdir, readdir, unlink, cp, stat } from 'fs/promises'
 import { existsSync } from 'fs'
@@ -7,6 +7,7 @@ import { AgentService } from './agent-service'
 import { AuthStore } from './auth-store'
 import { AppStateStore } from './app-state-store'
 import { SkillsStore } from './skills-store'
+import { resolveUserQuestion } from './tools/ask-user'
 
 let mainWindow: BrowserWindow | null = null
 const agentService = new AgentService()
@@ -23,13 +24,60 @@ function getSkillsPath(): string {
 }
 
 function createWindow(): void {
+  // Set a hidden menu with keyboard accelerators (visible menu is rendered in the renderer)
+  const menu = Menu.buildFromTemplate([
+    {
+      label: 'File',
+      submenu: [
+        { label: 'Quit', accelerator: 'Alt+F4', role: 'quit' }
+      ]
+    },
+    {
+      label: 'Edit',
+      submenu: [
+        { label: 'Undo', accelerator: 'CmdOrCtrl+Z', role: 'undo' },
+        { label: 'Redo', accelerator: 'CmdOrCtrl+Shift+Z', role: 'redo' },
+        { type: 'separator' },
+        { label: 'Cut', accelerator: 'CmdOrCtrl+X', role: 'cut' },
+        { label: 'Copy', accelerator: 'CmdOrCtrl+C', role: 'copy' },
+        { label: 'Paste', accelerator: 'CmdOrCtrl+V', role: 'paste' },
+        { label: 'Select All', accelerator: 'CmdOrCtrl+A', role: 'selectAll' }
+      ]
+    },
+    {
+      label: 'View',
+      submenu: [
+        { label: 'Reload', accelerator: 'CmdOrCtrl+R', role: 'reload' },
+        { label: 'Force Reload', accelerator: 'CmdOrCtrl+Shift+R', role: 'forceReload' },
+        { label: 'Toggle Developer Tools', accelerator: 'CmdOrCtrl+Shift+I', role: 'toggleDevTools' },
+        { type: 'separator' },
+        { label: 'Zoom In', accelerator: 'CmdOrCtrl+=', role: 'zoomIn' },
+        { label: 'Zoom Out', accelerator: 'CmdOrCtrl+-', role: 'zoomOut' },
+        { label: 'Reset Zoom', accelerator: 'CmdOrCtrl+0', role: 'resetZoom' },
+        { type: 'separator' },
+        { label: 'Toggle Full Screen', accelerator: 'F11', role: 'togglefullscreen' }
+      ]
+    }
+  ])
+  Menu.setApplicationMenu(menu)
+
+  const savedBounds = appStateStore.getWindowBounds()
+
   mainWindow = new BrowserWindow({
-    width: 1200,
-    height: 800,
+    width: savedBounds?.width ?? 1200,
+    height: savedBounds?.height ?? 800,
+    x: savedBounds?.x,
+    y: savedBounds?.y,
     minWidth: 800,
     minHeight: 600,
     title: 'ConnText Build',
-    titleBarStyle: 'hiddenInset',
+    icon: join(__dirname, '../../resources/icon.ico'),
+    titleBarStyle: 'hidden',
+    titleBarOverlay: {
+      color: '#0e0e14',
+      symbolColor: '#a0a0b8',
+      height: 44
+    },
     webPreferences: {
       preload: join(__dirname, '../preload/index.js'),
       contextIsolation: true,
@@ -37,6 +85,35 @@ function createWindow(): void {
       sandbox: false
     }
   })
+
+  // Restore maximized state after window is created
+  if (savedBounds?.isMaximized) {
+    mainWindow.maximize()
+  }
+
+  // Save window bounds on move/resize (debounced)
+  let saveBoundsTimeout: ReturnType<typeof setTimeout> | null = null
+  const saveWindowBounds = () => {
+    if (saveBoundsTimeout) clearTimeout(saveBoundsTimeout)
+    saveBoundsTimeout = setTimeout(() => {
+      if (!mainWindow) return
+      const isMaximized = mainWindow.isMaximized()
+      // Save normal (non-maximized) bounds so restore works correctly
+      const bounds = isMaximized ? (mainWindow.getNormalBounds?.() ?? mainWindow.getBounds()) : mainWindow.getBounds()
+      appStateStore.saveWindowBounds({
+        x: bounds.x,
+        y: bounds.y,
+        width: bounds.width,
+        height: bounds.height,
+        isMaximized
+      })
+    }, 500)
+  }
+
+  mainWindow.on('resize', saveWindowBounds)
+  mainWindow.on('move', saveWindowBounds)
+  mainWindow.on('maximize', saveWindowBounds)
+  mainWindow.on('unmaximize', saveWindowBounds)
 
   if (process.env.ELECTRON_RENDERER_URL) {
     mainWindow.loadURL(process.env.ELECTRON_RENDERER_URL)
@@ -50,6 +127,76 @@ function createWindow(): void {
 }
 
 // ===== IPC Handlers =====
+
+// Menu actions - define allowed actions for security
+const ALLOWED_MENU_ACTIONS = [
+  'app:quit',
+  'window:reload',
+  'window:toggle-devtools',
+  'window:toggle-fullscreen',
+  'window:zoom-in',
+  'window:zoom-out',
+  'window:zoom-reset',
+  'edit:undo',
+  'edit:redo',
+  'edit:cut',
+  'edit:copy',
+  'edit:paste',
+  'edit:select-all'
+] as const
+
+ipcMain.handle('menu:execute', (_event, action: string) => {
+  // Validate action is in allowed list
+  if (!ALLOWED_MENU_ACTIONS.includes(action as any)) {
+    console.warn(`Invalid menu action attempted: ${action}`)
+    return
+  }
+
+  const win = BrowserWindow.getFocusedWindow()
+  if (!win) return
+
+  switch (action) {
+    case 'app:quit':
+      app.quit()
+      break
+    case 'window:reload':
+      win.reload()
+      break
+    case 'window:toggle-devtools':
+      win.webContents.toggleDevTools()
+      break
+    case 'window:toggle-fullscreen':
+      win.setFullScreen(!win.isFullScreen())
+      break
+    case 'window:zoom-in':
+      win.webContents.setZoomLevel(win.webContents.getZoomLevel() + 0.5)
+      break
+    case 'window:zoom-out':
+      win.webContents.setZoomLevel(win.webContents.getZoomLevel() - 0.5)
+      break
+    case 'window:zoom-reset':
+      win.webContents.setZoomLevel(0)
+      break
+    case 'edit:undo':
+      win.webContents.undo()
+      break
+    case 'edit:redo':
+      win.webContents.redo()
+      break
+    case 'edit:cut':
+      win.webContents.cut()
+      break
+    case 'edit:copy':
+      win.webContents.copy()
+      break
+    case 'edit:paste':
+      win.webContents.paste()
+      break
+    case 'edit:select-all':
+      win.webContents.selectAll()
+      break
+  }
+})
 
 // Auth
 ipcMain.handle('auth:get-credentials', () => {
@@ -139,6 +286,22 @@ ipcMain.handle('dialog:select-folder', async () => {
   return result.filePaths[0]
 })
 
+// General file selection (multiple files)
+ipcMain.handle('dialog:select-files', async () => {
+  if (!mainWindow) return null
+
+  const result = await dialog.showOpenDialog(mainWindow, {
+    properties: ['openFile', 'multiSelections'],
+    title: 'Select Files to Attach'
+  })
+
+  if (result.canceled || result.filePaths.length === 0) {
+    return null
+  }
+
+  return result.filePaths
+})
+
 // File selection for Claude Code executable
 ipcMain.handle('dialog:select-file', async () => {
   if (!mainWindow) return null
@@ -168,6 +331,21 @@ ipcMain.handle('fs:read-file', async (_event, filePath: string) => {
       return ''
     }
     throw error
+  }
+})
+
+ipcMain.handle('fs:read-pdf', async (_event, filePath: string) => {
+  try {
+    const pdfParse = (await import('pdf-parse')).default
+    const buffer = await readFile(filePath)
+    const data = await pdfParse(buffer)
+    return {
+      text: data.text,
+      numPages: data.numpages,
+      info: data.info
+    }
+  } catch (error) {
+    return { error: (error as Error).message, text: '', numPages: 0, info: {} }
   }
 })
 
@@ -207,6 +385,54 @@ ipcMain.handle('fs:get-user-home', async () => {
 
 ipcMain.handle('fs:write-image-file', async (_event, filePath: string, imageData: Uint8Array) => {
   await writeFile(filePath, Buffer.from(imageData))
+})
+
+ipcMain.handle('fs:list-directories', async (_event, dirPath: string) => {
+  try {
+    const entries = await readdir(dirPath, { withFileTypes: true })
+    return entries
+      .filter(e => e.isDirectory() && !e.name.startsWith('.'))
+      .map(e => e.name)
+      .sort()
+  } catch {
+    return []
+  }
+})
+
+// File search (for @ mentions)
+ipcMain.handle('fs:search-files', async (_event, rootDir: string, query: string, limit: number = 20) => {
+  const IGNORED = new Set([
+    'node_modules', '.git', '.next', 'dist', 'out', 'build', '.cache',
+    'vendor', '.idea', '.vscode', '__pycache__', '.conntext', '.claude'
+  ])
+  const results: string[] = []
+  const lowerQuery = query.toLowerCase()
+
+  async function walk(dir: string, prefix: string): Promise<void> {
+    if (results.length >= limit) return
+    let entries
+    try {
+      entries = await readdir(dir, { withFileTypes: true })
+    } catch {
+      return
+    }
+    for (const entry of entries) {
+      if (results.length >= limit) return
+      const relPath = prefix ? `${prefix}/${entry.name}` : entry.name
+      if (entry.isDirectory()) {
+        if (!IGNORED.has(entry.name) && !entry.name.startsWith('.')) {
+          await walk(join(dir, entry.name), relPath)
+        }
+      } else {
+        if (relPath.toLowerCase().includes(lowerQuery)) {
+          results.push(relPath)
+        }
+      }
+    }
+  }
+
+  await walk(rootDir, '')
+  return results
 })
 
 // Skills
@@ -311,6 +537,48 @@ ipcMain.handle('projects:fetch', async () => {
   }
 })
 
+// Workspace folders (for folder context selector)
+ipcMain.handle('workspace:fetch-folders', async (_event, projectId: string) => {
+  try {
+    const credentials = authStore.getCredentials()
+    if (!credentials) {
+      return {
+        success: false,
+        folders: [],
+        error: 'Not authenticated'
+      }
+    }
+
+    const response = await fetch(`${credentials.apiUrl}/api/projects/${projectId}/planning/folders`, {
+      method: 'GET',
+      headers: {
+        'Accept': 'application/json',
+        'Authorization': `Bearer ${credentials.apiToken}`
+      }
+    })
+
+    if (!response.ok) {
+      return {
+        success: false,
+        folders: [],
+        error: `Failed to fetch folders: ${response.statusText}`
+      }
+    }
+
+    const data = await response.json()
+    return {
+      success: true,
+      folders: data.folders || []
+    }
+  } catch (error) {
+    return {
+      success: false,
+      folders: [],
+      error: error instanceof Error ? error.message : 'Unknown error'
+    }
+  }
+})
+
 // Agent
 ipcMain.handle('agent:send-message', async (_event, params: {
   content: string
@@ -319,10 +587,23 @@ ipcMain.handle('agent:send-message', async (_event, params: {
   sessionId?: string
   systemPrompt?: string
   allowedTools?: string[]
+  model?: string
 }) => {
   return agentService.sendMessage(params, (event) => {
     mainWindow?.webContents.send('agent:stream-event', event)
   })
+})
+
+ipcMain.handle('agent:abort', async (_event, sessionId: string) => {
+  return agentService.abortSession(sessionId)
+})
+
+ipcMain.handle('agent:inject-message', async (_event, sessionId: string, content: string) => {
+  return { injected: agentService.injectMessage(sessionId, content) }
+})
+
+ipcMain.handle('agent:rewind-files', async (_event, sessionId: string, userMessageId: string, dryRun: boolean) => {
+  return agentService.rewindFiles(sessionId, userMessageId, dryRun)
 })
 
 ipcMain.handle('agent:create-session', async (_event, params: {
@@ -347,6 +628,18 @@ ipcMain.handle('agent:list-active-sessions', async () => {
   const sessions = agentService.listActiveSessions()
   console.log('[IPC] list-active-sessions → count:', sessions.length)
   return sessions
+})
+
+// User question responses (from ask_user MCP tool)
+ipcMain.handle('agent:respond-to-question', async (_event, questionId: string, response: string) => {
+  console.log('[IPC] respond-to-question:', questionId, '| response length:', response.length)
+  console.log('[IPC] response preview:', response.substring(0, 200))
+  const resolved = resolveUserQuestion(questionId, response)
+  console.log('[IPC] resolveUserQuestion result:', resolved, '| questionId:', questionId)
+  if (!resolved) {
+    console.error('[IPC] WARNING: Could not resolve question — pending question not found for id:', questionId)
+  }
+  return { success: resolved }
 })
 
 // Session persistence
@@ -424,6 +717,21 @@ ipcMain.handle('session:list', async (_event, workingDirectory: string) => {
   } catch (error) {
     console.error('Failed to list sessions:', error)
     return []
+  }
+})
+
+ipcMain.handle('session:rename', async (_event, workingDirectory: string, sessionId: string, newTitle: string) => {
+  console.log('[Main] session:rename called', { workingDirectory, sessionId, newTitle })
+  try {
+    const sessionFile = join(workingDirectory, '.conntext', 'sessions', `${sessionId}.json`)
+    const content = await readFile(sessionFile, 'utf-8')
+    const session = JSON.parse(content)
+    session.title = newTitle
+    await writeFile(sessionFile, JSON.stringify(session, null, 2), 'utf-8')
+    return { success: true }
+  } catch (error) {
+    console.error('Failed to rename session:', error)
+    return { success: false }
   }
 })
 

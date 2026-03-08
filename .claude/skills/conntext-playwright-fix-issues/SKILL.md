@@ -1,7 +1,7 @@
 ---
 name: conntext-playwright-fix-issues
 description: Fix bugs found during Playwright browser testing. Reads SUMMARY.md from test results folders and fixes each issue, logging fixes to a date-specific file in a fixes folder. Use when the user says "fix test bugs", "fix playwright issues", "fix browser test issues", or runs /conntext-playwright-fix-issues.
-allowed-tools: Bash, Read, Write, Edit, Glob, Grep, TodoWrite, AskUserQuestion
+allowed-tools: Bash, Read, Write, Edit, Glob, Grep, TodoWrite, mcp__customTools__ask_user
 ---
 
 # Fix Playwright Test Issues
@@ -43,7 +43,7 @@ Results folders follow the naming pattern: `results-v[N]-[role]/` (e.g., `result
 
 ### Step 3: Ask user which results folder to use
 
-**You MUST use AskUserQuestion** to ask which results folder contains the bugs to fix.
+**You MUST use mcp__customTools__ask_user** to ask which results folder contains the bugs to fix.
 
 Build the options dynamically from the last 3 most recently modified folders:
 
@@ -105,7 +105,7 @@ Store this date for the fixed items filename.
 
 ### Step 7: Ask user for fix preferences
 
-**You MUST use AskUserQuestion** to ask the user two questions:
+**You MUST use mcp__customTools__ask_user** to ask the user two questions:
 
 #### Question 1: Fix Mode
 
@@ -170,7 +170,7 @@ For each unchecked `- [ ]` item:
 3. **Apply the fix** using the Edit tool
 4. **Update SUMMARY.md** - Change `- [ ]` to `- [x]`
 5. **MANDATORY: Write to the fixes file** (see Step 12)
-6. **Ask user to continue** using AskUserQuestion:
+6. **Ask user to continue** using mcp__customTools__ask_user:
    - **Question**: "Fixed: [issue summary]. Continue to the next issue?"
    - **Header**: "Continue?"
    - **Options**:

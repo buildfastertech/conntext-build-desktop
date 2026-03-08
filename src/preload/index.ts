@@ -1,7 +1,7 @@
-import { contextBridge, ipcRenderer } from 'electron'
+import { contextBridge, ipcRenderer, webUtils } from 'electron'
 
 export interface StreamEvent {
-  event: 'text' | 'tool_use' | 'tool_result' | 'done' | 'error' | 'system'
+  event: 'text' | 'tool_use' | 'tool_result' | 'done' | 'error' | 'system' | 'user_question'
   data: Record<string, unknown>
 }
 
@@ -28,14 +28,18 @@ const api = {
   // Folder selection
   selectFolder: () => ipcRenderer.invoke('dialog:select-folder'),
   selectFile: () => ipcRenderer.invoke('dialog:select-file'),
+  selectFiles: () => ipcRenderer.invoke('dialog:select-files'),
 
   // File operations
   readFile: (path: string) => ipcRenderer.invoke('fs:read-file', path),
+  readPdf: (path: string) => ipcRenderer.invoke('fs:read-pdf', path),
   writeFile: (path: string, content: string) => ipcRenderer.invoke('fs:write-file', path, content),
   copyDirectory: (sourcePath: string, destinationPath: string) => ipcRenderer.invoke('fs:copy-directory', sourcePath, destinationPath),
   getSkillsPath: () => ipcRenderer.invoke('fs:get-skills-path'),
   getUserHome: () => ipcRenderer.invoke('fs:get-user-home'),
   writeImageFile: (path: string, imageData: Uint8Array) => ipcRenderer.invoke('fs:write-image-file', path, imageData),
+  listDirectories: (dirPath: string) => ipcRenderer.invoke('fs:list-directories', dirPath),
+  searchFiles: (rootDir: string, query: string, limit?: number) => ipcRenderer.invoke('fs:search-files', rootDir, query, limit ?? 20),
 
   // Agent
   sendMessage: (params: {
@@ -44,7 +48,13 @@ const api = {
     sessionId?: string
     systemPrompt?: string
     allowedTools?: string[]
+    model?: string
   }) => ipcRenderer.invoke('agent:send-message', params),
+
+  abortAgent: (sessionId: string) => ipcRenderer.invoke('agent:abort', sessionId),
+  injectMessage: (sessionId: string, content: string) => ipcRenderer.invoke('agent:inject-message', sessionId, content),
+  rewindFiles: (sessionId: string, userMessageId: string, dryRun?: boolean) =>
+    ipcRenderer.invoke('agent:rewind-files', sessionId, userMessageId, dryRun ?? false),
 
   createSession: (params: {
     workingDirectory: string
@@ -70,6 +80,8 @@ const api = {
     ipcRenderer.invoke('session:list', workingDirectory),
   deleteSession: (workingDirectory: string, sessionId: string) =>
     ipcRenderer.invoke('session:delete', workingDirectory, sessionId),
+  renameSession: (workingDirectory: string, sessionId: string, newTitle: string) =>
+    ipcRenderer.invoke('session:rename', workingDirectory, sessionId, newTitle),
 
   // Skills
   syncSkills: (apiUrl: string, apiToken: string) =>
@@ -87,12 +99,22 @@ const api = {
   fetchProjects: () =>
     ipcRenderer.invoke('projects:fetch'),
 
+  // User question responses
+  respondToQuestion: (questionId: string, response: string) =>
+    ipcRenderer.invoke('agent:respond-to-question', questionId, response),
+
+  // Menu
+  executeMenuAction: (action: string) => ipcRenderer.invoke('menu:execute', action),
+
   // Stream events from main process
   onStreamEvent: (callback: (event: StreamEvent) => void) => {
     const handler = (_event: Electron.IpcRendererEvent, data: StreamEvent) => callback(data)
     ipcRenderer.on('agent:stream-event', handler)
     return () => ipcRenderer.removeListener('agent:stream-event', handler)
-  }
+  },
+
+  // File utilities
+  getPathForFile: (file: File) => webUtils.getPathForFile(file)
 }
 
 contextBridge.exposeInMainWorld('api', api)

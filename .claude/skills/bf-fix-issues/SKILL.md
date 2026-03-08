@@ -1,7 +1,7 @@
 ---
 name: bf-fix-issues
 description: Fix bugs found by /bf-code-review. Reads suggested-changes.md and fixes each issue, logging all fixes to date-specific fixed items files. Use when the user says "fix code review bugs", "fix review issues", "fix review", or runs /bf-fix-issues.
-allowed-tools: Bash, Read, Write, Edit, Glob, TodoWrite, AskUserQuestion
+allowed-tools: Bash, Read, Write, Edit, Glob, TodoWrite, mcp__customTools__ask_user
 ---
 
 # Fix Code Review Issues
@@ -38,29 +38,23 @@ File path: .claude/skills/bf-code-review/suggested-changes.md
 
 ### Step 3: Ask user for fix preferences
 
-**You MUST use AskUserQuestion** to ask the user two questions before proceeding:
+Call mcp__customTools__ask_user ONCE with BOTH questions below. The tool will display an interactive UI and block until the user responds. When it returns, the result is a JSON object containing the user's answers — parse it and proceed immediately to Step 4. Do NOT call the tool again.
 
-#### Question 1: Fix Mode
+Call it with these two questions:
 
-Ask the user how they want to fix issues:
+1. Question: "How would you like to fix the issues?" with options:
+   - "Fix all at once" (description: "Fix all matching issues without pausing between each one")
+   - "Fix one by one" (description: "Fix each issue and pause for user confirmation before moving to the next")
 
-- **Question**: "How would you like to fix the issues?"
-- **Header**: "Fix mode"
-- **Options**:
-  - **"Fix all at once"** - Fix all matching issues without pausing between each one
-  - **"Fix one by one"** - Fix each issue and pause for user confirmation before moving to the next
+2. Question: "Which types of issues do you want to fix?" with options:
+   - "All (Critical, Warnings and Informational)" (description: "Fix all issue types")
+   - "Critical issues only" (description: "Only fix issues under the Critical section")
+   - "Warnings only" (description: "Only fix issues under the Warnings section")
+   - "Informational only" (description: "Only fix issues under the Informational section")
 
-#### Question 2: Issue Types
+The tool returns JSON like: {"status":"answered","answers":[{"question":"...","selected":["Fix all at once"]},{"question":"...","selected":["All (Critical, Warnings and Informational)"]}]}
 
-Ask the user which types of issues to fix:
-
-- **Question**: "Which types of issues do you want to fix?"
-- **Header**: "Issue types"
-- **Options**:
-  - **"All (Critical, Warnings and Informational)"** - Fix all issue types
-  - **"Critical issues only"** - Only fix issues under the "### Critical" section
-  - **"Warnings only"** - Only fix issues under the "### Warnings" section
-  - **"Informational only"** - Only fix issues under the "### Informational" section
+Extract the "selected" values and proceed to Step 4. Do NOT re-ask.
 
 ### Step 4: Filter issues based on user selection
 
@@ -95,12 +89,7 @@ For each unchecked `- [ ]` item in the filtered list:
 2. **Apply the fix** using the Edit tool
 3. **Update suggested-changes.md** - change `- [ ]` to `- [x]`
 4. **MANDATORY: Write to the date-specific fixed items file** - append an entry for the fix (see Step 7)
-5. **Ask user to continue** using AskUserQuestion:
-   - **Question**: "Fixed [issue title]. Continue to the next issue?"
-   - **Header**: "Continue?"
-   - **Options**:
-     - **"Yes, continue"** - Proceed to the next issue
-     - **"No, stop here"** - Stop fixing and report progress so far
+5. **Ask user to continue** — call mcp__customTools__ask_user ONCE with question "Fixed [issue title]. Continue to the next issue?" and options "Yes, continue" and "No, stop here". Parse the JSON response and proceed accordingly.
 
 ### Step 7: Log the fix to date-specific fixed items file (MANDATORY)
 

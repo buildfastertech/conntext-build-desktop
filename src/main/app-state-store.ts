@@ -1,11 +1,20 @@
 import Store from 'electron-store'
 
+interface WindowBounds {
+  x: number
+  y: number
+  width: number
+  height: number
+  isMaximized: boolean
+}
+
 interface AppState {
   lastWorkingDirectory: string | null
   lastSessionId: string | null
   claudeCodePath: string | null
   recentDirectories: string[]
   activeWorkspaceId: string | null
+  windowBounds: WindowBounds | null
 }
 
 export class AppStateStore {
@@ -23,13 +32,15 @@ export class AppStateStore {
     const claudeCodePath = this.store.get('claudeCodePath') as string | undefined
     const recentDirectories = (this.store.get('recentDirectories') as string[] | undefined) ?? []
     const activeWorkspaceId = this.store.get('activeWorkspaceId') as string | undefined
+    const windowBounds = this.store.get('windowBounds') as WindowBounds | undefined
 
     return {
       lastWorkingDirectory: lastWorkingDirectory ?? null,
       lastSessionId: lastSessionId ?? null,
       claudeCodePath: claudeCodePath ?? null,
       recentDirectories,
-      activeWorkspaceId: activeWorkspaceId ?? null
+      activeWorkspaceId: activeWorkspaceId ?? null,
+      windowBounds: windowBounds ?? null
     }
   }
 
@@ -64,6 +75,14 @@ export class AppStateStore {
 
   clearActiveWorkspaceId(): void {
     this.store.delete('activeWorkspaceId')
+  }
+
+  saveWindowBounds(bounds: WindowBounds): void {
+    this.store.set('windowBounds', bounds)
+  }
+
+  getWindowBounds(): WindowBounds | null {
+    return (this.store.get('windowBounds') as WindowBounds | undefined) ?? null
   }
 
   clearAppState(): void {

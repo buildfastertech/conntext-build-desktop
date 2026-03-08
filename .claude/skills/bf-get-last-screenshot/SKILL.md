@@ -1,7 +1,7 @@
 ---
 name: bf-get-last-screenshot
 description: Find and return the file path of the most recent screenshot. Use when the user says "last screenshot", "latest screenshot", "get screenshot", "find screenshot", "screenshot path", or wants to reference their most recent screen capture.
-allowed-tools: Bash, Read, Write, Edit, Glob, AskUserQuestion
+allowed-tools: Bash, Read, Write, Edit, Glob, mcp__customTools__ask_user
 ---
 
 # Get Last Screenshot
@@ -26,7 +26,7 @@ Check if the user has a saved screenshots folder path in the project's `CLAUDE.m
    - If found, use that path and skip to Step 2
 
 2. **If no saved path exists, onboard the user**:
-   - Use AskUserQuestion to ask:
+   - Use mcp__customTools__ask_user to ask:
 
    **Question**: "Where are your screenshots saved? Please provide the full folder path."
    **Header**: "Screenshots"

@@ -1,7 +1,7 @@
 ---
 name: bf-code-review
 description: Review unpushed commits and uncommitted changes for bugs, logic errors, security vulnerabilities, and code quality issues. Use when the user says "review pending", "check my changes", "review commits", "review before push", "code review", or wants to find bugs in staged/unstaged changes. Supports "all" parameter to scan entire project. Follows the white rabbit to trace bugs that chain across files.
-allowed-tools: Bash, Read, Grep, Glob, Task, TodoWrite, Write, AskUserQuestion
+allowed-tools: Bash, Read, Grep, Glob, Task, TodoWrite, Write, mcp__customTools__ask_user
 ---
 
 # Code Review
@@ -737,7 +737,7 @@ Look for assumptions that aren't explicitly enforced:
 
 ### Step 1: Ask user review preferences
 
-**You MUST use AskUserQuestion** to ask the user TWO questions before proceeding:
+**You MUST use mcp__customTools__ask_user** to ask the user TWO questions before proceeding:
 
 #### Question 1: Review Scope
 
@@ -807,7 +807,7 @@ Let the user choose which commit(s) to review:
    git log --oneline -20
    ```
 
-2. **Ask user to select commits** using AskUserQuestion or natural language:
+2. **Ask user to select commits** using mcp__customTools__ask_user or natural language:
    - "Which commit(s) would you like to review?"
    - Accept formats:
      - **Single commit**: `abc1234` or `HEAD~1`
@@ -1649,6 +1649,7 @@ result = calculate()  // 'result' is never used, but no comment or context
 - Skip generated files, vendor directories, and lock files
 - Don't nitpick style issues that linters would catch
 - **Always write to `suggested-changes.md`** even if no issues found (write "No issues found")
+- **Always output the full absolute path** to the suggested-changes.md file in a fenced code block at the end of your response, so the user can easily find and open it
 - **Always follow the white rabbit** 🐇 for changed files and previous commits modes - trace signature changes, type changes, and behavioral changes to find bugs in consumer files
 - **Report chained issues separately** with clear links back to the originating change
 
@@ -1768,6 +1769,11 @@ result = calculate()  // 'result' is never used, but no comment or context
 
 ---
 
-Suggested changes written to `.claude/skills/bf-code-review/suggested-changes.md`
+Suggested changes written to:
+
+\`\`\`
+/full/absolute/path/to/project/.claude/skills/bf-code-review/suggested-changes.md
+\`\`\`
+
 Run `/bf-fix-issues` to fix these issues automatically.
 ```

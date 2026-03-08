@@ -1,9 +1,61 @@
 import { query } from '@anthropic-ai/claude-agent-sdk'
-import type { SDKMessage, Options, HookJSONOutput } from '@anthropic-ai/claude-agent-sdk'
+import type { SDKMessage, SDKUserMessage, Options, HookJSONOutput, Query, RewindFilesResult } from '@anthropic-ai/claude-agent-sdk'
 import { randomUUID } from 'crypto'
 import { execSync } from 'child_process'
 import { VisionService } from './vision-service'
 import { customToolsServer } from './tools'
+import { setQuestionNotifier } from './tools/ask-user'
+
+/**
+ * An async-iterable message channel that can be pushed to externally.
+ * Used to feed user messages into a running query via streamInput().
+ *
+ * The channel stays open (the async iterator blocks) until close() is called,
+ * which allows the query's stdin to remain open for the duration of the task.
+ */
+class MessageChannel implements AsyncIterable<SDKUserMessage> {
+  private queue: SDKUserMessage[] = []
+  private resolve: (() => void) | null = null
+  private closed = false
+
+  push(message: SDKUserMessage): void {
+    if (this.closed) return
+    this.queue.push(message)
+    // Wake up the iterator if it's waiting
+    if (this.resolve) {
+      this.resolve()
+      this.resolve = null
+    }
+  }
+
+  close(): void {
+    this.closed = true
+    // Wake up the iterator so it can exit
+    if (this.resolve) {
+      this.resolve()
+      this.resolve = null
+    }
+  }
+
+  [Symbol.asyncIterator](): AsyncIterator<SDKUserMessage> {
+    return {
+      next: async (): Promise<IteratorResult<SDKUserMessage>> => {
+        while (true) {
+          if (this.queue.length > 0) {
+            return { value: this.queue.shift()!, done: false }
+          }
+          if (this.closed) {
+            return { value: undefined as any, done: true }
+          }
+          // Wait for a push() or close()
+          await new Promise<void>((resolve) => {
+            this.resolve = resolve
+          })
+        }
+      }
+    }
+  }
+}
 
 function findClaudeExecutable(customPath?: string | null): string {
   // If custom path is provided, use it
@@ -23,7 +75,7 @@ function findClaudeExecutable(customPath?: string | null): string {
 }
 
 export interface StreamEvent {
-  event: 'text' | 'tool_use' | 'tool_result' | 'done' | 'error' | 'system'
+  event: 'text' | 'tool_use' | 'tool_result' | 'done' | 'error' | 'system' | 'user_question'
   data: Record<string, unknown>
 }
 
@@ -64,9 +116,14 @@ interface Session {
   createdAt: Date
   isProcessing: boolean
   messageQueue: QueuedMessage[]
+  abortController: AbortController | null
+  /** The last Query object — needed for rewindFiles() after stream completes */
+  lastQuery: Query | null
+  /** Active input channel for injecting messages into a running query */
+  inputChannel: MessageChannel | null
 }
 
-const DEFAULT_TOOLS = ['Read', 'Write', 'Edit', 'Glob', 'Grep', 'Bash', 'code_review']
+const DEFAULT_TOOLS = ['Read', 'Write', 'Edit', 'Glob', 'Grep', 'Bash', 'mcp__customTools__code_review', 'mcp__customTools__ask_user']
 
 export class AgentService {
   private sessions = new Map<string, Session>()
@@ -100,7 +157,10 @@ export class AgentService {
       },
       createdAt: new Date(),
       isProcessing: false,
-      messageQueue: []
+      messageQueue: [],
+      abortController: null,
+      lastQuery: null,
+      inputChannel: null
     })
 
     console.log('[AgentService] Session created:', id, '| Total sessions:', this.sessions.size)
@@ -108,8 +168,69 @@ export class AgentService {
   }
 
   destroySession(sessionId: string): { success: boolean } {
+    const session = this.sessions.get(sessionId)
+    if (session?.abortController) {
+      session.abortController.abort()
+    }
     this.sessions.delete(sessionId)
     return { success: true }
+  }
+
+  /**
+   * Abort the currently running query for a session.
+   * This kills the SDK subprocess and breaks the streaming loop.
+   */
+  abortSession(sessionId: string): { success: boolean } {
+    const session = this.sessions.get(sessionId)
+    if (!session) {
+      console.log('[AgentService] abortSession: session not found:', sessionId)
+      return { success: false }
+    }
+
+    if (session.abortController) {
+      console.log('[AgentService] Aborting active query for session:', sessionId)
+      session.abortController.abort()
+      session.abortController = null
+      // Also clear the message queue so queued messages don't auto-fire
+      session.messageQueue = []
+      return { success: true }
+    }
+
+    console.log('[AgentService] abortSession: no active query to abort for session:', sessionId)
+    return { success: false }
+  }
+
+  /**
+   * Inject a message into a currently running query.
+   * The agent picks it up at its next natural pause (between tool calls).
+   * Returns true if the message was injected, false if no active query.
+   */
+  injectMessage(sessionId: string, content: string): boolean {
+    const session = this.sessions.get(sessionId)
+    if (!session) {
+      console.log('[AgentService] injectMessage: session not found:', sessionId)
+      return false
+    }
+
+    if (!session.isProcessing || !session.inputChannel) {
+      console.log('[AgentService] injectMessage: no active query for session:', sessionId)
+      return false
+    }
+
+    console.log('[AgentService] Injecting message into running query:', content.slice(0, 100))
+
+    const message: SDKUserMessage = {
+      type: 'user',
+      session_id: session.sdkSessionId || '',
+      message: {
+        role: 'user' as const,
+        content: [{ type: 'text' as const, text: content }]
+      },
+      parent_tool_use_id: null
+    } as SDKUserMessage
+
+    session.inputChannel.push(message)
+    return true
   }
 
   getSessionInfo(sessionId: string): Session | null {
@@ -144,6 +265,7 @@ export class AgentService {
       sdkSessionId?: string
       systemPrompt?: string
       allowedTools?: string[]
+      model?: string
       previousTurns?: Array<{
         id: string
         userMessage: string
@@ -251,7 +373,9 @@ Please proceed to complete the user's request using the appropriate tools.`
           },
           createdAt: new Date(),
           isProcessing: false,
-          messageQueue: []
+          messageQueue: [],
+          abortController: null,
+          lastQuery: null
         })
         session = this.sessions.get(params.sessionId)!
       }
@@ -283,24 +407,42 @@ Please proceed to complete the user's request using the appropriate tools.`
       })
     }
 
-    // Mark session as processing
+    // Mark session as processing and create abort controller
     session.isProcessing = true
+    const abortController = new AbortController()
+    session.abortController = abortController
 
     try {
       const claudePath = findClaudeExecutable(this.customClaudeCodePath)
 
       const options: Options = {
-        model: 'claude-sonnet-4-5-20250929',
+        model: params.model || 'claude-sonnet-4-5-20250929',
         pathToClaudeCodeExecutable: claudePath,
         allowedTools: session.config.allowedTools,
+        // Block built-in AskUserQuestion — it can't interact with users in Electron.
+        // The agent must use mcp__customTools__ask_user instead.
+        disallowedTools: ['AskUserQuestion'],
         cwd: session.config.workingDirectory,
         permissionMode: 'bypassPermissions',
         allowDangerouslySkipPermissions: true,
         maxTurns: 50,
         includePartialMessages: true,
+        // Enable file checkpointing so we can rewind file changes
+        enableFileCheckpointing: true,
+        // Required to receive checkpoint UUIDs in the stream
+        extraArgs: { 'replay-user-messages': null },
+        env: {
+          ...process.env,
+          // ask_user tool waits for user input, which can take minutes
+          CLAUDE_CODE_STREAM_CLOSE_TIMEOUT: '300000',
+        },
         // Load project CLAUDE.md files — these survive compaction and are
         // re-read every turn, giving the agent persistent project context
-        settingSources: ['project'],
+        settingSources: ['user', 'project'],
+        // Use the full Claude Code CLI system prompt for consistent behavior
+        // (coding conventions, safety rules, tool instructions, etc.)
+        // with our custom instructions appended
+        tools: { type: 'preset', preset: 'claude_code' },
         // Add custom MCP server with your tools
         mcpServers: {
           customTools: customToolsServer
@@ -340,21 +482,41 @@ Please proceed to complete the user's request using the appropriate tools.`
         `You MUST NOT access, read, write, or modify any files or directories outside of ${workDir}.`,
         `All file paths must be within ${workDir}. Reject any request that would require accessing files outside this directory.`,
         `When using Bash, always run commands from ${workDir} and never cd outside of it.`,
+        ``,
+        `EXCEPTION: If the user provides a full absolute file path (e.g. "C:\\Users\\..." or "/home/...") in their message, you MAY read that file using the Read tool. You must NEVER write to, edit, or delete files outside ${workDir}. This read-only exception applies only when the user explicitly provides the full path.`,
       ].join('\n')
 
       // Build persistent session context from turns — this goes in the system
       // prompt so it survives compaction (system prompt is always re-injected)
       const sessionContext = this.buildSessionContext(params.previousTurns)
 
-      // Assemble system prompt: guard + user prompt + session context
-      const systemParts = [directoryGuard]
+      const interactiveQuestions = [
+        `INTERACTIVE QUESTIONS — USER INPUT:`,
+        `When you need to ask the user a question with choices, you MUST follow these exact steps:`,
+        `1. First call ToolSearch with query "select:mcp__customTools__ask_user" to load the tool`,
+        `2. Then call mcp__customTools__ask_user with your questions and options`,
+        `The tool displays an interactive UI. When it returns, the response contains the user's actual answers (formatted as Q: and A: pairs). Trust those answers and proceed immediately — do NOT re-ask the same questions.`,
+        `IMPORTANT: The built-in AskUserQuestion tool is DISABLED. You MUST use mcp__customTools__ask_user instead.`,
+        `ALWAYS use this two-step process (ToolSearch then mcp__customTools__ask_user) whenever you are presenting 2+ options, asking for confirmation, or requesting preferences.`,
+        `NEVER type out numbered options or choices as plain text — ALWAYS use the tool instead.`,
+        `Only call mcp__customTools__ask_user ONCE per set of questions. After receiving answers, proceed with the task.`,
+      ].join('\n')
+
+      // Assemble custom instructions to append to the CLI system prompt
+      const appendParts = [directoryGuard, interactiveQuestions]
       if (session.config.systemPrompt) {
-        systemParts.push(session.config.systemPrompt)
+        appendParts.push(session.config.systemPrompt)
       }
       if (sessionContext) {
-        systemParts.push(sessionContext)
+        appendParts.push(sessionContext)
       }
-      options.systemPrompt = systemParts.join('\n\n')
+      // Use the full Claude Code CLI system prompt as base, with our
+      // custom instructions (directory guard, interactive questions, etc.) appended
+      options.systemPrompt = {
+        type: 'preset',
+        preset: 'claude_code',
+        append: appendParts.join('\n\n')
+      }
 
       // Resume SDK session if available — this carries full conversation history natively
       if (session.sdkSessionId) {
@@ -393,13 +555,56 @@ Please proceed to complete the user's request using the appropriate tools.`
         console.log('[AgentService] Multi-part content blocks:', promptContent.length)
       }
 
+      // Wire up the ask_user notifier so MCP tool can push question events to the renderer
+      setQuestionNotifier((questionData) => {
+        onEvent({
+          event: 'user_question',
+          data: questionData
+        } as StreamEvent)
+      })
+
+      // Wire up abort controller so the frontend can cancel this query
+      options.abortController = abortController
+
+      // Create input channel for injecting messages mid-query
+      const inputChannel = new MessageChannel()
+      session.inputChannel = inputChannel
+
+      // Build the initial SDKUserMessage
+      const contentBlocks = Array.isArray(promptContent)
+        ? promptContent
+        : [{ type: 'text' as const, text: promptContent }]
+
+      const initialMessage: SDKUserMessage = {
+        type: 'user',
+        session_id: session.sdkSessionId || '',
+        message: {
+          role: 'user' as const,
+          content: contentBlocks as any
+        },
+        parent_tool_use_id: null
+      } as SDKUserMessage
+
+      // Push initial message and start the query with the channel as prompt
+      inputChannel.push(initialMessage)
+
       const stream = query({
-        prompt: promptContent as any,
+        prompt: inputChannel,
         options
       })
 
+      // Store the query object so we can call rewindFiles() later
+      session.lastQuery = stream
+
       for await (const message of stream) {
         this.handleSDKMessage(message, session, onEvent)
+        // Break immediately on result so the finally block clears isProcessing
+        // before the next sendMessage call arrives. Without this, the stream
+        // may linger open after the result, leaving isProcessing=true and
+        // causing subsequent messages to be incorrectly queued.
+        if (message.type === 'result') {
+          break
+        }
       }
 
       return { sessionId: session.id, success: true }
@@ -409,8 +614,18 @@ Please proceed to complete the user's request using the appropriate tools.`
       onEvent({ event: 'error', data: { error: errorMessage } })
       return { sessionId: session.id, success: false }
     } finally {
-      // Clear processing flag
+      // Clear the question notifier so stale references don't leak
+      setQuestionNotifier(null)
+
+      // Close the input channel so streamInput() finishes and stdin closes
+      if (session.inputChannel) {
+        session.inputChannel.close()
+        session.inputChannel = null
+      }
+
+      // Clear processing flag and abort controller
       session.isProcessing = false
+      session.abortController = null
       console.log('[AgentService] Cleared processing flag for session:', session.id)
 
       // Process next queued message if any
@@ -423,6 +638,71 @@ Please proceed to complete the user's request using the appropriate tools.`
           .then(nextMessage.resolve)
           .catch(nextMessage.reject)
       }
+    }
+  }
+
+  /**
+   * Rewind file changes to a specific checkpoint (user message).
+   * Resumes the session with an empty prompt and calls rewindFiles() on the new query.
+   */
+  async rewindFiles(
+    sessionId: string,
+    userMessageId: string,
+    dryRun: boolean = false
+  ): Promise<RewindFilesResult> {
+    const session = this.sessions.get(sessionId)
+    if (!session) {
+      return { canRewind: false, error: 'Session not found' }
+    }
+
+    if (!session.sdkSessionId) {
+      return { canRewind: false, error: 'No SDK session to rewind (session has not sent any messages yet)' }
+    }
+
+    if (session.isProcessing) {
+      return { canRewind: false, error: 'Cannot rewind while a query is in progress. Stop the agent first.' }
+    }
+
+    console.log('[AgentService] Rewinding files for session:', sessionId, 'to checkpoint:', userMessageId, 'dryRun:', dryRun)
+
+    try {
+      const claudePath = findClaudeExecutable(this.customClaudeCodePath)
+
+      // Resume the session with the same options used to create it.
+      // The CLI subprocess needs matching config to locate checkpoint data.
+      const rewindQuery = query({
+        prompt: '',
+        options: {
+          model: 'claude-sonnet-4-5-20250929',
+          pathToClaudeCodeExecutable: claudePath,
+          cwd: session.config.workingDirectory,
+          resume: session.sdkSessionId,
+          enableFileCheckpointing: true,
+          extraArgs: { 'replay-user-messages': null },
+          permissionMode: 'bypassPermissions',
+          allowDangerouslySkipPermissions: true,
+          settingSources: ['user', 'project'],
+          stderr: (data: string) => {
+            console.error('[SDK rewind stderr]', data.trim())
+          }
+        }
+      })
+
+      // We need to start iterating to establish the connection, then call rewindFiles
+      let result: RewindFilesResult | null = null
+      for await (const msg of rewindQuery) {
+        console.log('[AgentService] rewind resumed, first message type:', msg.type, 'uuid:', (msg as any).uuid)
+        // Call rewindFiles once the connection is open
+        result = await rewindQuery.rewindFiles(userMessageId, { dryRun })
+        console.log('[AgentService] rewindFiles result:', result)
+        break // We're done — break out of the stream
+      }
+
+      return result ?? { canRewind: false, error: 'No messages received from resumed session' }
+    } catch (error) {
+      const errorMessage = error instanceof Error ? error.message : 'Unknown error'
+      console.error('[AgentService] rewindFiles error:', errorMessage)
+      return { canRewind: false, error: errorMessage }
     }
   }
 
@@ -517,6 +797,12 @@ Please proceed to complete the user's request using the appropriate tools.`
     session: Session,
     onEvent: (event: StreamEvent) => void
   ): void {
+    // Debug: log all message types and their UUIDs for checkpoint tracking
+    const msgAny = message as any
+    if (msgAny.uuid) {
+      console.log(`[AgentService] Message type=${message.type} subtype=${msgAny.subtype || ''} uuid=${msgAny.uuid}`)
+    }
+
     switch (message.type) {
       case 'system':
         if (message.subtype === 'init') {
@@ -578,6 +864,21 @@ Please proceed to complete the user's request using the appropriate tools.`
       }
 
       case 'user': {
+        // Emit checkpoint UUID so the renderer can enable rewind for this turn.
+        // With replay-user-messages enabled, SDKUserMessageReplay messages have
+        // guaranteed UUIDs that serve as checkpoint restore points.
+        const userMsgUuid = (message as any).uuid as string | undefined
+        const isReplay = (message as any).isReplay === true
+        const isSynthetic = (message as any).isSynthetic === true
+        console.log(`[AgentService] User message: uuid=${userMsgUuid} isReplay=${isReplay} isSynthetic=${isSynthetic} parent_tool_use_id=${(message as any).parent_tool_use_id}`)
+
+        if (userMsgUuid) {
+          onEvent({
+            event: 'system',
+            data: { type: 'checkpoint', userMessageId: userMsgUuid }
+          })
+        }
+
         const userMessage = message.message
         if (userMessage?.content && Array.isArray(userMessage.content)) {
           for (const block of userMessage.content) {
@@ -592,6 +893,56 @@ Please proceed to complete the user's request using the appropriate tools.`
             }
           }
         }
+        break
+      }
+
+      case 'stream_event': {
+        // SDKPartialAssistantMessage — real-time streaming deltas
+        const streamEvent = (message as any).event
+        if (streamEvent) {
+          if (streamEvent.type === 'content_block_start') {
+            const block = streamEvent.content_block
+            if (block?.type === 'thinking') {
+              onEvent({
+                event: 'thinking',
+                data: { type: 'start', thinking: block.thinking ?? '' }
+              })
+            }
+          } else if (streamEvent.type === 'content_block_delta') {
+            const delta = streamEvent.delta
+            if (delta?.type === 'thinking_delta') {
+              onEvent({
+                event: 'thinking',
+                data: { type: 'delta', thinking: delta.thinking ?? '' }
+              })
+            } else if (delta?.type === 'text_delta') {
+              onEvent({
+                event: 'partial_text',
+                data: { text: delta.text ?? '' }
+              })
+            }
+          } else if (streamEvent.type === 'content_block_stop') {
+            // Thinking block finished
+            onEvent({
+              event: 'thinking',
+              data: { type: 'stop' }
+            })
+          }
+        }
+        break
+      }
+
+      case 'tool_progress': {
+        // SDKToolProgressMessage — progress updates for long-running tools
+        const toolMsg = message as any
+        onEvent({
+          event: 'tool_progress',
+          data: {
+            toolUseId: toolMsg.tool_use_id,
+            toolName: toolMsg.tool_name,
+            elapsedSeconds: toolMsg.elapsed_time_seconds
+          }
+        })
         break
       }
 

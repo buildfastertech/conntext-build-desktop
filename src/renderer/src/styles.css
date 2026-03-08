@@ -34,14 +34,10 @@ body {
   font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', system-ui, sans-serif;
   overflow: hidden;
   user-select: none;
-  -webkit-app-region: drag;
   -webkit-font-smoothing: antialiased;
   -moz-osx-font-smoothing: grayscale;
 }
 
-input, textarea, button, a, select, [role="button"] {
-  -webkit-app-region: no-drag;
-}
 
 /* Custom scrollbar matching brand */
 ::-webkit-scrollbar {

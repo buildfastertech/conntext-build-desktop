@@ -1,27 +1,40 @@
 import { useState, useRef, useEffect, useCallback, memo } from 'react'
 import ReactMarkdown from 'react-markdown'
-import { FolderOpen } from 'lucide-react'
-import type { StreamEvent, UserInfo, SessionMetadata, Turn, ToolEvent, Workspace } from '../../../preload/index.d'
+import { FolderOpen, Pencil, Check, X, ChevronDown } from 'lucide-react'
+import type { StreamEvent, UserInfo, SessionMetadata, Turn, ToolEvent, Workspace, UserQuestion, Project } from '../../../preload/index.d'
 import { ResizablePanes } from '../components/ResizablePanes'
 import { MemoryDialog } from '../components/MemoryDialog'
 import { SettingsDialog } from '../components/SettingsDialog'
 import { AppHeader } from '../components/AppHeader'
+import { FilePreviewDialog } from '../components/FilePreviewDialog'
+import { QuestionDialog } from '../components/QuestionDialog'
+import { FolderSelector } from '../components/FolderSelector'
+
+const AVAILABLE_MODELS = [
+  { value: 'claude-sonnet-4-5-20250929', label: 'Sonnet 4.5', description: 'Fast & capable' },
+  { value: 'claude-sonnet-4-6', label: 'Sonnet 4.6', description: 'Latest Sonnet' },
+  { value: 'claude-opus-4-6', label: 'Opus 4.6', description: 'Most capable' },
+  { value: 'claude-haiku-4-5-20251001', label: 'Haiku 4.5', description: 'Fastest' },
+]
 
 interface BuildScreenProps {
   user: UserInfo | null
   onLogout: () => void
   workingDirectory: string | null
+  selectedProject?: Project | null
   onBackToProjects: () => void
+  onWorkingDirectoryChange?: (dir: string) => void
   workspaces?: Workspace[]
   activeWorkspace?: Workspace | null
   onSwitchWorkspace?: (workspace: Workspace) => void
 }
 
-export function BuildScreen({ user, onLogout, workingDirectory: initialWorkingDirectory, onBackToProjects: onBackToProjectsFromParent, workspaces = [], activeWorkspace: activeWorkspaceProp, onSwitchWorkspace: onSwitchWorkspaceProp }: BuildScreenProps) {
+export function BuildScreen({ user, onLogout, workingDirectory: initialWorkingDirectory, selectedProject, onBackToProjects: onBackToProjectsFromParent, onWorkingDirectoryChange, workspaces = [], activeWorkspace: activeWorkspaceProp, onSwitchWorkspace: onSwitchWorkspaceProp }: BuildScreenProps) {
   const [workingDirectory, setWorkingDirectory] = useState<string | null>(initialWorkingDirectory)
   const [turns, setTurns] = useState<Turn[]>([])
   const [input, setInput] = useState('')
   const [pastedImages, setPastedImages] = useState<Array<{ data: string; mediaType: string }>>([])
+  const [attachedFiles, setAttachedFiles] = useState<string[]>([])
   const [isStreaming, setIsStreaming] = useState(false)
   const [sessionId, setSessionId] = useState<string | null>(null)
   const [sdkSessionId, setSdkSessionId] = useState<string | null>(null)
@@ -34,13 +47,21 @@ export function BuildScreen({ user, onLogout, workingDirectory: initialWorkingDi
   const [isActionMenuOpen, setIsActionMenuOpen] = useState(false)
   const [isSettingsOpen, setIsSettingsOpen] = useState(false)
   const [recentDirectories, setRecentDirectories] = useState<string[]>([])
+  const [previewFilePath, setPreviewFilePath] = useState<string | null>(null)
+  const [pendingQuestions, setPendingQuestions] = useState<UserQuestion[]>([])
+  const [activeFolders, setActiveFolders] = useState<string[]>(() => {
+    try { return JSON.parse(localStorage.getItem('activeFolders') || '[]') } catch { return [] }
+  })
+  const [chosenFolders, setChosenFolders] = useState<string[]>(() => {
+    try { return JSON.parse(localStorage.getItem('chosenFolders') || '[]') } catch { return [] }
+  })
 
-  // Sync working directory prop with local state
+  // Sync working directory prop with local state (only when parent sets a non-null value)
   useEffect(() => {
-    if (initialWorkingDirectory !== null && initialWorkingDirectory !== workingDirectory) {
+    if (initialWorkingDirectory !== null) {
       setWorkingDirectory(initialWorkingDirectory)
     }
-  }, [initialWorkingDirectory, workingDirectory])
+  }, [initialWorkingDirectory])
   const [selectedCommandIndex, setSelectedCommandIndex] = useState(0)
   const [queuedMessages, setQueuedMessages] = useState<Array<{ content: string; images?: Array<{ data: string; mediaType: string }> }>>([])
   const [visibleTurnCount, setVisibleTurnCount] = useState(6)
@@ -51,6 +72,12 @@ export function BuildScreen({ user, onLogout, workingDirectory: initialWorkingDi
   const [skillsLastSync, setSkillsLastSync] = useState<string | null>(null)
   const [isSyncingSkills, setIsSyncingSkills] = useState(false)
   const [syncSkillsMessage, setSyncSkillsMessage] = useState<{ type: 'success' | 'error' | 'info'; text: string } | null>(null)
+  const [selectedModel, setSelectedModel] = useState(() => localStorage.getItem('selectedModel') || 'claude-sonnet-4-5-20250929')
+  const [isModelDropdownOpen, setIsModelDropdownOpen] = useState(false)
+  const selectedModelRef = useRef(localStorage.getItem('selectedModel') || 'claude-sonnet-4-5-20250929')
+  const [fileSuggestions, setFileSuggestions] = useState<string[]>([])
+  const [selectedFileIndex, setSelectedFileIndex] = useState(0)
+  const fileSearchTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null)
 
   const activeTurnIdRef = useRef<string | null>(null)
   const messagesEndRef = useRef<HTMLDivElement>(null)
@@ -65,9 +92,29 @@ export function BuildScreen({ user, onLogout, workingDirectory: initialWorkingDi
   const workingDirectoryRef = useRef<string | null>(null)
   const currentSessionTitleRef = useRef<string>('')
 
-  const scrollToBottom = () => {
-    messagesEndRef.current?.scrollIntoView({ behavior: 'smooth' })
+  const scrollContainerRef = useRef<HTMLDivElement>(null)
+  const userHasScrolledUpRef = useRef(false)
+
+  const scrollToBottom = (behavior: ScrollBehavior = 'instant') => {
+    if (userHasScrolledUpRef.current) return
+    messagesEndRef.current?.scrollIntoView({ behavior })
   }
+
+  // Detect if user has scrolled up (to stop auto-scroll)
+  useEffect(() => {
+    const container = scrollContainerRef.current
+    if (!container) return
+
+    const handleScroll = () => {
+      const { scrollTop, scrollHeight, clientHeight } = container
+      const distanceFromBottom = scrollHeight - scrollTop - clientHeight
+      // If user is within 150px of bottom, consider them "at bottom"
+      userHasScrolledUpRef.current = distanceFromBottom > 150
+    }
+
+    container.addEventListener('scroll', handleScroll)
+    return () => container.removeEventListener('scroll', handleScroll)
+  }, [])
 
   useEffect(() => {
     scrollToBottom()
@@ -117,6 +164,21 @@ export function BuildScreen({ user, onLogout, workingDirectory: initialWorkingDi
     currentSessionTitleRef.current = currentSessionTitle
   }, [currentSessionTitle])
 
+  // Keep selectedModelRef in sync and persist to localStorage
+  useEffect(() => {
+    selectedModelRef.current = selectedModel
+    localStorage.setItem('selectedModel', selectedModel)
+  }, [selectedModel])
+
+  // Persist folder selections to localStorage
+  useEffect(() => {
+    localStorage.setItem('activeFolders', JSON.stringify(activeFolders))
+  }, [activeFolders])
+
+  useEffect(() => {
+    localStorage.setItem('chosenFolders', JSON.stringify(chosenFolders))
+  }, [chosenFolders])
+
   // Close action menu when clicking outside
   useEffect(() => {
     const handleClickOutside = (e: MouseEvent) => {
@@ -132,6 +194,19 @@ export function BuildScreen({ user, onLogout, workingDirectory: initialWorkingDi
     return () => document.removeEventListener('mousedown', handleClickOutside)
   }, [isActionMenuOpen])
 
+  // Close model dropdown when clicking outside
+  useEffect(() => {
+    if (!isModelDropdownOpen) return
+    const handleClickOutside = (e: MouseEvent) => {
+      const target = e.target as HTMLElement
+      if (!target.closest('.model-dropdown-container')) {
+        setIsModelDropdownOpen(false)
+      }
+    }
+    document.addEventListener('mousedown', handleClickOutside)
+    return () => document.removeEventListener('mousedown', handleClickOutside)
+  }, [isModelDropdownOpen])
+
   // Load last app state on mount
   useEffect(() => {
     const restoreLastState = async () => {
@@ -139,8 +214,6 @@ export function BuildScreen({ user, onLogout, workingDirectory: initialWorkingDi
         const appState = await window.api.getAppState()
         setRecentDirectories(appState.recentDirectories || [])
         if (appState.lastWorkingDirectory) {
-          setWorkingDirectory(appState.lastWorkingDirectory)
-
           // If there's a last session, try to load it
           if (appState.lastSessionId) {
             const sessionData = await window.api.loadSession(
@@ -197,6 +270,7 @@ export function BuildScreen({ user, onLogout, workingDirectory: initialWorkingDi
       loadSessions(workingDirectory)
       // Save working directory to app state
       window.api.saveWorkingDirectory(workingDirectory)
+      onWorkingDirectoryChange?.(workingDirectory)
     }
   }, [workingDirectory])
 
@@ -245,10 +319,13 @@ export function BuildScreen({ user, onLogout, workingDirectory: initialWorkingDi
   }, [input])
 
   const processNextQueuedMessage = useCallback(() => {
-    // ATOMIC guard check and set - prevent race conditions
+    // ATOMIC guard check-and-set - prevent race conditions
+    // Safe in JavaScript's single-threaded event loop: check and set happen
+    // in same tick before any async operations, preventing concurrent execution
     if (isStreamingRef.current || isProcessingQueueRef.current) {
       return
     }
+    // Set guard immediately after check (same execution context = atomic)
     isProcessingQueueRef.current = true
 
     console.log('[Queue] processNextQueuedMessage called, queue length:', queuedMessagesRef.current.length)
@@ -294,10 +371,11 @@ export function BuildScreen({ user, onLogout, workingDirectory: initialWorkingDi
       costUsd: null
     }
 
-    // Set streaming state BEFORE sending (both state and ref)
+    // Handoff guards: set streaming guard BEFORE clearing processing guard
+    // This ensures continuous protection against concurrent queue processing
     isStreamingRef.current = true
     setIsStreaming(true)
-    // Now safe to clear processing flag - isStreamingRef will guard further calls
+    // Safe to clear processing flag now - isStreamingRef takes over as guard
     isProcessingQueueRef.current = false
     activeTurnIdRef.current = turnId
     localStorage.setItem('activeTurnId', turnId)
@@ -332,6 +410,7 @@ export function BuildScreen({ user, onLogout, workingDirectory: initialWorkingDi
       workingDirectory: workingDirectoryRef.current!,
       sessionId: sessionIdRef.current ?? undefined,
       sdkSessionId: sdkSessionIdRef.current ?? undefined,
+      model: selectedModelRef.current,
       previousTurns: turnsRef.current.filter(t => t.isComplete)
     }).catch(() => {
       setTurns((prev) =>
@@ -360,7 +439,7 @@ export function BuildScreen({ user, onLogout, workingDirectory: initialWorkingDi
   // Listen for stream events
   useEffect(() => {
     const unsubscribe = window.api.onStreamEvent((event: StreamEvent) => {
-      // Handle system events (compaction) regardless of active turn
+      // Handle system events (compaction, checkpoints) regardless of active turn
       if (event.event === 'system') {
         const type = event.data.type as string
         if (type === 'compacting') {
@@ -369,6 +448,19 @@ export function BuildScreen({ user, onLogout, workingDirectory: initialWorkingDi
           setIsCompacting(false)
           // After compaction, the context was reset — use a reduced estimate
           setContextTokens(prev => Math.round(prev * 0.15))
+        } else if (type === 'checkpoint') {
+          // Store the FIRST checkpoint UUID on the active turn for file rewind.
+          // The first user message UUID represents the state before any changes.
+          const turnId = activeTurnIdRef.current
+          const userMessageId = event.data.userMessageId as string
+          if (turnId && userMessageId) {
+            setTurns((prev) =>
+              prev.map((t) =>
+                // Only set if not already set — keep the first checkpoint
+                t.id === turnId && !t.checkpointId ? { ...t, checkpointId: userMessageId } : t
+              )
+            )
+          }
         }
         return
       }
@@ -390,7 +482,7 @@ export function BuildScreen({ user, onLogout, workingDirectory: initialWorkingDi
                 : 0
               while (blocks.length <= expectedBlockIdx) blocks.push('')
               blocks[expectedBlockIdx] += text
-              return { ...t, textBlocks: blocks }
+              return { ...t, textBlocks: blocks, currentPartialText: undefined }
             })
           )
           scrollToBottom()
@@ -432,6 +524,78 @@ export function BuildScreen({ user, onLogout, workingDirectory: initialWorkingDi
           )
           break
 
+        case 'partial_text': {
+          const partialText = event.data.text as string
+          setTurns((prev) =>
+            prev.map((t) =>
+              t.id === turnId
+                ? { ...t, currentPartialText: (t.currentPartialText ?? '') + partialText }
+                : t
+            )
+          )
+          scrollToBottom()
+          break
+        }
+
+        case 'thinking': {
+          const thinkingType = event.data.type as string
+          if (thinkingType === 'start') {
+            setTurns((prev) =>
+              prev.map((t) =>
+                t.id === turnId
+                  ? { ...t, isThinking: true, currentThinking: (event.data.thinking as string) ?? '' }
+                  : t
+              )
+            )
+          } else if (thinkingType === 'delta') {
+            setTurns((prev) =>
+              prev.map((t) =>
+                t.id === turnId
+                  ? { ...t, currentThinking: (t.currentThinking ?? '') + (event.data.thinking as string) }
+                  : t
+              )
+            )
+          } else if (thinkingType === 'stop') {
+            setTurns((prev) =>
+              prev.map((t) =>
+                t.id === turnId
+                  ? { ...t, isThinking: false }
+                  : t
+              )
+            )
+          }
+          scrollToBottom()
+          break
+        }
+
+        case 'tool_progress': {
+          const toolUseId = event.data.toolUseId as string
+          const toolName = event.data.toolName as string
+          const elapsedSeconds = event.data.elapsedSeconds as number
+          setTurns((prev) =>
+            prev.map((t) =>
+              t.id === turnId
+                ? {
+                    ...t,
+                    toolProgress: {
+                      ...(t.toolProgress ?? {}),
+                      [toolUseId]: { toolName, elapsedSeconds }
+                    }
+                  }
+                : t
+            )
+          )
+          break
+        }
+
+        case 'user_question':
+          setPendingQuestions((prev) => [
+            ...prev,
+            event.data as unknown as UserQuestion
+          ])
+          scrollToBottom()
+          break
+
         case 'done':
           setSessionId(event.data.sessionId as string)
           if (event.data.sdkSessionId) {
@@ -444,7 +608,12 @@ export function BuildScreen({ user, onLogout, workingDirectory: initialWorkingDi
                     ...t,
                     isComplete: true,
                     endTime: Date.now(),
-                    costUsd: (event.data.costUsd as number) ?? null
+                    costUsd: (event.data.costUsd as number) ?? null,
+                    // Clear transient streaming state
+                    currentPartialText: undefined,
+                    currentThinking: undefined,
+                    isThinking: false,
+                    toolProgress: undefined
                   }
                 : t
             )
@@ -453,6 +622,8 @@ export function BuildScreen({ user, onLogout, workingDirectory: initialWorkingDi
           if (localStorage.getItem('activeTurnId') === turnId) {
             localStorage.removeItem('activeTurnId')
           }
+          // Clear any remaining pending questions
+          setPendingQuestions([])
           // Reset streaming state
           isStreamingRef.current = false
           setIsStreaming(false)
@@ -739,17 +910,82 @@ This file stores important context and information for the AI agent.
     }
   }
 
-  const handleSend = useCallback(async () => {
-    if (!workingDirectory) return
-    if (!input.trim() && pastedImages.length === 0) return
+  const handleQuestionSubmit = useCallback(async (questionId: string, response: string) => {
+    // Remove the question from pending list
+    setPendingQuestions((prev) => prev.filter((q) => q.questionId !== questionId))
 
-    // Don't send while already streaming - we can only track one active turn at a time
-    if (isStreamingRef.current) {
-      console.log('[BuildScreen] Already streaming, please wait for current message to complete')
-      return
+    // Send response back to main process
+    try {
+      await window.api.respondToQuestion(questionId, response)
+    } catch (err) {
+      console.error('[BuildScreen] Failed to submit question response:', err)
+    }
+  }, [])
+
+  const handleSend = useCallback(async (overrideInput?: string) => {
+    let effectiveInput = overrideInput ?? input
+    if (!workingDirectory) return
+    if (!effectiveInput.trim() && pastedImages.length === 0 && attachedFiles.length === 0) return
+
+    // Prepend attached file paths as references for the agent to read
+    if (attachedFiles.length > 0) {
+      const fileRefs = attachedFiles.map(f => `@${f}`).join(' ')
+
+      effectiveInput = effectiveInput.trim()
+        ? `${fileRefs}\n\n${effectiveInput}`
+        : `Please review these files: ${fileRefs}`
+      setAttachedFiles([])
     }
 
-    const trimmedInput = input.trim()
+    // If already streaming, inject the message into the running query
+    if (isStreamingRef.current) {
+      const trimmed = effectiveInput.trim()
+      if (!trimmed) return
+      const activeSessionId = sessionIdRef.current || sessionId
+      if (activeSessionId) {
+        console.log('[BuildScreen] Injecting message into running query (session:', activeSessionId, '):', trimmed.slice(0, 80))
+        try {
+          const { injected } = await window.api.injectMessage(activeSessionId, trimmed)
+          if (injected) {
+            // Show the injected message in the active turn's text blocks
+            const turnId = activeTurnIdRef.current
+            if (turnId) {
+              setTurns((prev) =>
+                prev.map((t) => {
+                  if (t.id !== turnId) return t
+                  const blocks = [...t.textBlocks]
+                  // Insert a visual marker for the injected user message
+                  const lastToolIdx = t.toolEvents.length
+                  const expectedBlockIdx = lastToolIdx > 0 ? countToolGroups(t.toolEvents) : 0
+                  while (blocks.length <= expectedBlockIdx) blocks.push('')
+                  blocks[expectedBlockIdx] += `\n\n> **You:** ${trimmed}\n\n`
+                  return { ...t, textBlocks: blocks }
+                })
+              )
+            }
+            setInput('')
+            if (inputRef.current) {
+              inputRef.current.style.height = 'auto'
+            }
+            return
+          }
+        } catch (err) {
+          console.error('[BuildScreen] injectMessage error:', err)
+        }
+      } else {
+        console.log('[BuildScreen] No session ID available for injection')
+      }
+      // If injection failed, the query likely completed between our check and the call.
+      // Re-check streaming state — if still streaming, just return (shouldn't happen).
+      if (isStreamingRef.current) {
+        console.log('[BuildScreen] Injection failed but still streaming — cannot send')
+        return
+      }
+      // Query completed, fall through to send as a new message
+      console.log('[BuildScreen] Injection failed, query completed — sending as new message')
+    }
+
+    const trimmedInput = effectiveInput.trim()
 
     // Handle slash commands
     if (trimmedInput.startsWith('/')) {
@@ -815,6 +1051,7 @@ This file stores important context and information for the AI agent.
           workingDirectory: workingDirectory!,
           sessionId: sessionId ?? undefined,
           sdkSessionId: sdkSessionId ?? undefined,
+          model: selectedModel,
           previousTurns: turns.filter(t => t.isComplete)
         }).then(result => {
           setTurns((prev) =>
@@ -855,7 +1092,12 @@ This file stores important context and information for the AI agent.
         /^\/loop$/,         // Known skills
         /^\/simplify$/,
         /^\/claude-api$/,
-        /^\/keybindings-help$/
+        /^\/keybindings-help$/,
+        /^\/fix-issues$/,
+        /^\/feature-build$/,
+        /^\/project-build$/,
+        /^\/playwright-test$/,
+        /^\/playwright-fix-issues$/
       ]
 
       if (skillPatterns.some(pattern => pattern.test(command))) {
@@ -909,6 +1151,7 @@ This file stores important context and information for the AI agent.
           workingDirectory: workingDirectory!,
           sessionId: sessionId ?? undefined,
           sdkSessionId: sdkSessionId ?? undefined,
+          model: selectedModel,
           previousTurns: turns.filter(t => t.isComplete)
         }).catch(() => {
           setTurns((prev) =>
@@ -989,6 +1232,16 @@ User: ${userName} (${user?.email || ''})
 Don't announce saves unless asked - just respond naturally.`
     }
 
+    // Add folder context to message if folders are selected
+    if (activeFolders.length > 0) {
+      const folderList = activeFolders.join(', ')
+      messageToSend = `${messageToSend}
+
+---
+FOLDER CONTEXT: The user has selected the following folders as the active context for this task: ${folderList}
+You MUST focus your work within these folders. When reading, writing, editing, or searching files, restrict operations to these folders unless the user explicitly asks otherwise. If the user's request relates to code, assume it's about code within these folders.`
+    }
+
     // Regular message handling
     const turnId = crypto.randomUUID()
     const newTurn: Turn = {
@@ -1042,6 +1295,7 @@ Don't announce saves unless asked - just respond naturally.`
         workingDirectory,
         sessionId: currentSessionId,
         sdkSessionId: sdkSessionId ?? undefined,
+        model: selectedModel,
         previousTurns: turns.filter(t => t.isComplete)
       })
 
@@ -1075,7 +1329,7 @@ Don't announce saves unless asked - just respond naturally.`
       setIsStreaming(false)
       activeTurnIdRef.current = null
     }
-  }, [input, workingDirectory, isStreaming, sessionId, sdkSessionId, memoryExists, pastedImages])
+  }, [input, workingDirectory, isStreaming, sessionId, sdkSessionId, memoryExists, pastedImages, attachedFiles, activeFolders, selectedModel])
 
   const detectMemoryIntent = (text: string): string | null => {
     // Patterns that indicate user wants to save to memory
@@ -1205,7 +1459,6 @@ Don't announce saves unless asked - just respond naturally.`
       setSessionId(sessionData.sessionId)
       setSdkSessionId(sessionData.sdkSessionId ?? null)
       setCurrentSessionTitle(sessionData.title)
-      setIsSessionHistoryDialogOpen(false)
     }
   }
 
@@ -1228,6 +1481,29 @@ Don't announce saves unless asked - just respond naturally.`
     setInput('')
     localStorage.removeItem('activeTurnId')
     console.log('[BuildScreen] Started new session')
+  }
+
+  const handleRenameSession = async (targetSessionId: string, newTitle: string) => {
+    if (!workingDirectory) return
+    console.log('[BuildScreen] Renaming session', targetSessionId, 'to', newTitle, 'in', workingDirectory)
+    try {
+      const result = await window.api.renameSession(workingDirectory, targetSessionId, newTitle)
+      console.log('[BuildScreen] Rename result:', result)
+      if (result.success) {
+        // Update local sessions list
+        setSessions(prev => prev.map(s =>
+          s.sessionId === targetSessionId ? { ...s, title: newTitle } : s
+        ))
+        // If renaming the current session, update the title
+        if (targetSessionId === sessionId) {
+          setCurrentSessionTitle(newTitle)
+        }
+        // Reload sessions from disk to ensure consistency
+        loadSessions(workingDirectory)
+      }
+    } catch (err) {
+      console.error('[BuildScreen] Rename failed:', err)
+    }
   }
 
   const handlePaste = async (e: React.ClipboardEvent<HTMLTextAreaElement>) => {
@@ -1346,15 +1622,81 @@ Don't announce saves unless asked - just respond naturally.`
   }
 
   const handleAddFile = async () => {
-    // TODO: Implement file attachment functionality
-    console.log('Add file clicked')
     setIsActionMenuOpen(false)
+    const files = await window.api.selectFiles()
+    if (files && files.length > 0) {
+      setAttachedFiles(prev => [...prev, ...files.filter(f => !prev.includes(f))])
+    }
+  }
+
+  const handleRemoveFile = (index: number) => {
+    setAttachedFiles(prev => prev.filter((_, i) => i !== index))
+  }
+
+  const [isDragOver, setIsDragOver] = useState(false)
+
+  const handleDragOver = (e: React.DragEvent) => {
+    e.preventDefault()
+    e.stopPropagation()
+    setIsDragOver(true)
+  }
+
+  const handleDragLeave = (e: React.DragEvent) => {
+    e.preventDefault()
+    e.stopPropagation()
+    setIsDragOver(false)
+  }
+
+  const handleDrop = async (e: React.DragEvent) => {
+    e.preventDefault()
+    e.stopPropagation()
+    setIsDragOver(false)
+
+    const dt = e.dataTransfer
+    if (!dt) return
+
+    const files = dt.files
+    if (!files || files.length === 0) return
+
+    const imageExts = new Set(['png', 'jpg', 'jpeg', 'gif', 'webp', 'bmp', 'svg', 'ico'])
+
+    for (const file of Array.from(files)) {
+      const ext = file.name.split('.').pop()?.toLowerCase() ?? ''
+      const isImage = file.type.startsWith('image/') || imageExts.has(ext)
+
+      if (isImage) {
+        // Handle image files — add as pasted images
+        const reader = new FileReader()
+        reader.onload = (event) => {
+          const base64 = event.target?.result as string
+          const base64Data = base64.split(',')[1]
+          const mediaType = file.type || `image/${ext === 'jpg' ? 'jpeg' : ext}`
+          setPastedImages(prev => [...prev, { data: base64Data, mediaType }])
+        }
+        reader.readAsDataURL(file)
+      } else {
+        // Use Electron's webUtils.getPathForFile via preload bridge
+        try {
+          const filePath = window.api.getPathForFile(file)
+          if (filePath) {
+            setAttachedFiles(prev => prev.includes(filePath) ? prev : [...prev, filePath])
+          }
+        } catch (err) {
+          console.warn('[Drop] Failed to get path for:', file.name, err)
+        }
+      }
+    }
   }
 
   // Available slash commands
   const SLASH_COMMANDS = [
-    { command: '/init', description: 'Initialize project memory', args: '' },
-    { command: '/code-review', description: 'Review code for issues', args: '[files]' }
+    { command: '/init', description: 'Initialize project memory & copy skills', args: '' },
+    { command: '/code-review', description: 'Review code for issues', args: '[files]' },
+    { command: '/fix-issues', description: 'Fix bugs from code review', args: '' },
+    { command: '/feature-build', description: 'Build a feature from PRD', args: '[prd-path]' },
+    { command: '/project-build', description: 'Build entire project', args: '[prd-path]' },
+    { command: '/playwright-test', description: 'Generate/run Playwright tests', args: '[prd-path]' },
+    { command: '/playwright-fix-issues', description: 'Fix Playwright test bugs', args: '' }
   ]
 
   // Filter commands based on input
@@ -1369,10 +1711,7 @@ Don't announce saves unless asked - just respond naturally.`
       // Immediately execute the command
       setInput(command)
       setSelectedCommandIndex(0)
-      // Use setTimeout to ensure state updates before sending
-      setTimeout(() => {
-        handleSend()
-      }, 0)
+      handleSend(command)
     } else {
       // Add to input for parameter entry
       setInput(command + ' ')
@@ -1384,6 +1723,84 @@ Don't announce saves unless asked - just respond naturally.`
         inputRef.current?.setSelectionRange(len, len)
       }, 0)
     }
+  }
+
+  /**
+   * Extract the @query at the current cursor position.
+   * Returns { query, start, end } if the cursor is inside an @mention, null otherwise.
+   */
+  const getAtMention = (): { query: string; start: number; end: number } | null => {
+    const textarea = inputRef.current
+    if (!textarea) return null
+    const cursorPos = textarea.selectionStart
+    const text = input
+
+    // Walk backwards from cursor to find the @ trigger
+    let atPos = -1
+    for (let i = cursorPos - 1; i >= 0; i--) {
+      if (text[i] === '@') {
+        atPos = i
+        break
+      }
+      // Stop if we hit whitespace before finding @ (it's not part of this token)
+      // But allow spaces within the query for multi-word filenames — stop at newline
+      if (text[i] === '\n') break
+    }
+
+    if (atPos === -1) return null
+    // The @ must be at the start or preceded by whitespace
+    if (atPos > 0 && !/\s/.test(text[atPos - 1])) return null
+
+    const query = text.slice(atPos + 1, cursorPos)
+    return { query, start: atPos, end: cursorPos }
+  }
+
+  // Trigger file search when input changes and contains @
+  useEffect(() => {
+    if (fileSearchTimerRef.current) {
+      clearTimeout(fileSearchTimerRef.current)
+    }
+
+    const mention = getAtMention()
+    if (!mention || !workingDirectory || mention.query.length === 0) {
+      setFileSuggestions([])
+      setSelectedFileIndex(0)
+      return
+    }
+
+    fileSearchTimerRef.current = setTimeout(async () => {
+      try {
+        const results = await window.api.searchFiles(workingDirectory, mention.query, 15)
+        setFileSuggestions(results)
+        setSelectedFileIndex(0)
+      } catch {
+        setFileSuggestions([])
+      }
+    }, 100) // 100ms debounce
+
+    return () => {
+      if (fileSearchTimerRef.current) {
+        clearTimeout(fileSearchTimerRef.current)
+      }
+    }
+  }, [input, workingDirectory])
+
+  const insertFileSuggestion = (filePath: string) => {
+    const mention = getAtMention()
+    if (!mention) return
+    // Replace @query with the full file path
+    const before = input.slice(0, mention.start)
+    const after = input.slice(mention.end)
+    const newInput = `${before}@${filePath}${after ? after : ' '}`
+    setInput(newInput)
+    setFileSuggestions([])
+    setSelectedFileIndex(0)
+    // Refocus and position cursor after the inserted path
+    setTimeout(() => {
+      inputRef.current?.focus()
+      const pos = mention.start + filePath.length + 1 + (after ? 0 : 1)
+      inputRef.current?.setSelectionRange(pos, pos)
+    }, 0)
   }
 
   const handleStop = () => {
@@ -1404,6 +1821,14 @@ Don't announce saves unless asked - just respond naturally.`
       )
     )
 
+    // Abort the backend SDK query so it actually stops
+    const currentSessionId = sessionIdRef.current
+    if (currentSessionId) {
+      window.api.abortAgent(currentSessionId).catch((err) => {
+        console.error('[BuildScreen] Failed to abort agent:', err)
+      })
+    }
+
     // Clean up
     isStreamingRef.current = false
     setIsStreaming(false)
@@ -1411,11 +1836,105 @@ Don't announce saves unless asked - just respond naturally.`
     if (localStorage.getItem('activeTurnId') === turnId) {
       localStorage.removeItem('activeTurnId')
     }
-
-    // Backend now handles queue processing automatically
   }
 
+  const [rewindingTurnId, setRewindingTurnId] = useState<string | null>(null)
+
+  const handleRewind = useCallback(async (turnId: string, checkpointId: string) => {
+    const currentSessionId = sessionIdRef.current
+    if (!currentSessionId) return
+
+    if (isStreamingRef.current) {
+      console.log('[BuildScreen] Cannot rewind while streaming')
+      return
+    }
+
+    setRewindingTurnId(turnId)
+
+    try {
+      // First do a dry run to preview changes
+      const preview = await window.api.rewindFiles(currentSessionId, checkpointId, true)
+
+      if (!preview.canRewind) {
+        console.error('[BuildScreen] Cannot rewind:', preview.error)
+        setRewindingTurnId(null)
+        return
+      }
+
+      // Now actually rewind
+      const result = await window.api.rewindFiles(currentSessionId, checkpointId, false)
+
+      if (result.canRewind) {
+        // Remove turns from this point onward
+        setTurns((prev) => {
+          const turnIndex = prev.findIndex(t => t.id === turnId)
+          if (turnIndex === -1) return prev
+          return prev.slice(0, turnIndex)
+        })
+
+        // Add a system message about the rewind
+        const rewindTurn: Turn = {
+          id: crypto.randomUUID(),
+          userMessage: 'Rewind files',
+          textBlocks: [
+            `Rewound file changes to before this point.\n\n` +
+            `**${result.filesChanged?.length ?? 0} file${(result.filesChanged?.length ?? 0) !== 1 ? 's' : ''} restored**` +
+            (result.filesChanged && result.filesChanged.length > 0
+              ? '\n' + result.filesChanged.map(f => `- \`${f}\``).join('\n')
+              : '') +
+            (result.insertions || result.deletions
+              ? `\n\n+${result.insertions ?? 0} / -${result.deletions ?? 0} lines`
+              : '')
+          ],
+          toolEvents: [],
+          isComplete: true,
+          startTime: Date.now(),
+          endTime: Date.now(),
+          costUsd: null
+        }
+        setTurns(prev => [...prev, rewindTurn])
+      } else {
+        console.error('[BuildScreen] Rewind failed:', result.error)
+      }
+    } catch (err) {
+      console.error('[BuildScreen] Rewind error:', err)
+    } finally {
+      setRewindingTurnId(null)
+    }
+  }, [])
+
   const handleKeyDown = (e: React.KeyboardEvent<HTMLTextAreaElement>) => {
+    // File mention autocomplete
+    if (fileSuggestions.length > 0) {
+      if (e.key === 'ArrowDown') {
+        e.preventDefault()
+        setSelectedFileIndex((prev) => (prev + 1) % fileSuggestions.length)
+        return
+      }
+      if (e.key === 'ArrowUp') {
+        e.preventDefault()
+        setSelectedFileIndex((prev) => (prev - 1 + fileSuggestions.length) % fileSuggestions.length)
+        return
+      }
+      if (e.key === 'Tab') {
+        e.preventDefault()
+        insertFileSuggestion(fileSuggestions[selectedFileIndex])
+        return
+      }
+      if (e.key === 'Enter' && !e.shiftKey) {
+        e.preventDefault()
+        insertFileSuggestion(fileSuggestions[selectedFileIndex])
+        // Don't send — just insert the file, user can keep typing
+        return
+      }
+      if (e.key === 'Escape') {
+        e.preventDefault()
+        setFileSuggestions([])
+        setSelectedFileIndex(0)
+        return
+      }
+    }
+
     const filteredCommands = getFilteredCommands()
     const showingCommands = input.startsWith('/') && !input.includes(' ') && filteredCommands.length > 0
 
@@ -1483,7 +2002,7 @@ Don't announce saves unless asked - just respond naturally.`
   // Folder selection screen
   if (!workingDirectory) {
     return (
-      <div className="flex h-screen flex-col bg-brand-bg">
+      <div className="flex h-full flex-col bg-brand-bg">
         <AppHeader
           user={user}
           onLogout={onLogout}
@@ -1510,6 +2029,7 @@ Don't announce saves unless asked - just respond naturally.`
           currentSessionTitle=""
           onLoadSession={() => {}}
           onNewSession={() => {}}
+          onRenameSession={() => {}}
         />
         <div className="flex flex-1 items-center justify-center">
           <div className="text-center">
@@ -1545,7 +2065,7 @@ Don't announce saves unless asked - just respond naturally.`
   const rightPaneContent = (
     <div className="flex h-full flex-col bg-brand-bg">
       {/* Messages area */}
-      <div className="flex-1 overflow-y-auto px-4 py-4">
+      <div ref={scrollContainerRef} className="flex-1 overflow-y-auto px-4 py-4">
         <div className="mx-auto max-w-3xl space-y-6">
           {turns.length === 0 && (
             <div className="py-20 text-center">
@@ -1573,7 +2093,16 @@ Don't announce saves unless asked - just respond naturally.`
                   </div>
                 )}
                 {visibleTurns.map((turn) => (
-                  <TurnBlock key={turn.id} turn={turn} liveElapsed={turn.id === activeTurnIdRef.current ? elapsed : null} />
+                  <TurnBlock
+                    key={turn.id}
+                    turn={turn}
+                    liveElapsed={turn.id === activeTurnIdRef.current ? elapsed : null}
+                    onFileClick={(path) => { console.log('[FileClick] path:', path); setPreviewFilePath(path) }}
+                    pendingQuestions={turn.id === activeTurnIdRef.current ? pendingQuestions : []}
+                    onQuestionSubmit={handleQuestionSubmit}
+                    onRewind={turn.checkpointId && !isStreaming ? handleRewind : undefined}
+                    isRewinding={rewindingTurnId === turn.id}
+                  />
                 ))}
               </>
             )
@@ -1634,6 +2163,52 @@ Don't announce saves unless asked - just respond naturally.`
             )
           })()}
 
+          {/* File mention autocomplete */}
+          {fileSuggestions.length > 0 && (
+            <div className="mb-2 rounded-lg border border-brand-border/50 bg-brand-card/50 px-2 py-2">
+              <div className="mb-1.5 px-1.5 text-xs font-medium text-brand-text">Files</div>
+              <div className="space-y-0.5 max-h-56 overflow-y-auto">
+                {fileSuggestions.map((file, index) => {
+                  const parts = file.split('/')
+                  const fileName = parts[parts.length - 1]
+                  const dirPath = parts.slice(0, -1).join('/')
+                  return (
+                    <button
+                      key={file}
+                      onClick={() => insertFileSuggestion(file)}
+                      className={`flex w-full cursor-pointer items-center gap-3 rounded-md px-2.5 py-2 text-left transition-colors ${
+                        index === selectedFileIndex
+                          ? 'bg-brand-purple/10 text-brand-text'
+                          : 'hover:bg-brand-border/30 text-brand-text-muted'
+                      }`}
+                    >
+                      <code className={`rounded px-2 py-0.5 font-mono text-sm font-medium ${
+                        index === selectedFileIndex
+                          ? 'bg-brand-purple/20 text-brand-purple'
+                          : 'bg-brand-bg text-brand-purple'
+                      }`}>
+                        {fileName}
+                      </code>
+                      {dirPath && (
+                        <span className="truncate text-xs text-brand-text-dim">{dirPath}</span>
+                      )}
+                      {index === selectedFileIndex && (
+                        <span className="ml-auto flex-shrink-0 text-[11px] text-brand-text-dim">Tab / ↵</span>
+                      )}
+                    </button>
+                  )
+                })}
+              </div>
+              <div className="mt-2 flex items-center gap-2 border-t border-brand-border/30 pt-2 px-1.5 text-[11px] text-brand-text-dim">
+                <span>↑↓ Navigate</span>
+                <span>•</span>
+                <span>Tab / ↵ Select</span>
+                <span>•</span>
+                <span>Esc Dismiss</span>
+              </div>
+            </div>
+          )}
+
           {/* Save to memory hint */}
           {input.toLowerCase().startsWith('save') && !memoryExists && (
             <div className="mb-2 rounded-lg border border-brand-border/50 bg-brand-card/50 px-3 py-2">
@@ -1693,8 +2268,44 @@ Don't announce saves unless asked - just respond naturally.`
             </div>
           )}
 
+          {/* File attachment previews */}
+          {attachedFiles.length > 0 && (
+            <div className="mb-2 flex flex-wrap gap-2">
+              {attachedFiles.map((filePath, index) => (
+                <div key={index} className="group flex items-center gap-1.5 rounded-lg border border-brand-border bg-brand-card px-2.5 py-1.5 text-xs text-brand-text">
+                  <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round" className="flex-shrink-0 text-brand-purple">
+                    <path d="M14 2H6a2 2 0 0 0-2 2v16a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V8z"></path>
+                    <polyline points="14 2 14 8 20 8"></polyline>
+                  </svg>
+                  <span className="max-w-[200px] truncate">{filePath.split(/[/\\]/).pop()}</span>
+                  <button
+                    onClick={() => handleRemoveFile(index)}
+                    className="ml-0.5 flex h-4 w-4 items-center justify-center rounded-full text-brand-text-dim opacity-0 transition-opacity hover:bg-brand-purple hover:text-white group-hover:opacity-100"
+                  >
+                    ×
+                  </button>
+                </div>
+              ))}
+            </div>
+          )}
+
           {/* Agent-style input container */}
-          <div className="relative rounded-2xl border border-brand-border/50 bg-brand-card/80 backdrop-blur-sm shadow-lg">
+          <div
+            className={`relative rounded-2xl border bg-brand-card/80 backdrop-blur-sm shadow-lg transition-colors ${isDragOver ? 'border-brand-purple bg-brand-purple/5' : 'border-brand-border/50'}`}
+            onDragOver={handleDragOver}
+            onDragLeave={handleDragLeave}
+            onDrop={handleDrop}
+          >
+            {/* Folder context selector */}
+            <FolderSelector
+              activeFolders={activeFolders}
+              chosenFolders={chosenFolders}
+              onActiveFoldersChange={setActiveFolders}
+              onChosenFoldersChange={setChosenFolders}
+              projectId={selectedProject?.id ?? null}
+              workingDirectory={workingDirectory}
+              disabled={isStreaming}
+            />
             <div className="flex items-center gap-2 px-3 py-2">
               {/* Action Menu Button */}
               <div className="action-menu-container relative flex-shrink-0">
@@ -1781,23 +2392,23 @@ Don't announce saves unless asked - just respond naturally.`
               {/* Send/Stop/Queue button */}
               <button
                 onClick={() => {
-                  if (isStreaming && !input.trim() && pastedImages.length === 0) {
+                  if (isStreaming && !input.trim() && pastedImages.length === 0 && attachedFiles.length === 0) {
                     handleStop()
                   } else {
                     handleSend()
                   }
                 }}
-                disabled={!isStreaming && !input.trim() && pastedImages.length === 0}
+                disabled={!isStreaming && !input.trim() && pastedImages.length === 0 && attachedFiles.length === 0}
                 className="flex-shrink-0 flex h-9 w-9 cursor-pointer items-center justify-center rounded-xl bg-brand-purple text-white transition-all hover:bg-brand-purple-dim hover:scale-105 disabled:cursor-not-allowed disabled:opacity-40 disabled:hover:scale-100"
                 title={
-                  isStreaming && !input.trim() && pastedImages.length === 0
+                  isStreaming && !input.trim() && pastedImages.length === 0 && attachedFiles.length === 0
                     ? 'Stop response'
                     : isStreaming
                     ? 'Queue message'
                     : 'Send message'
                 }
               >
-                {isStreaming && !input.trim() && pastedImages.length === 0 ? (
+                {isStreaming && !input.trim() && pastedImages.length === 0 && attachedFiles.length === 0 ? (
                   // Stop icon
                   <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
                     <rect x="6" y="6" width="12" height="12" rx="2" />
@@ -1817,11 +2428,49 @@ Don't announce saves unless asked - just respond naturally.`
                 )}
               </button>
             </div>
+
+            {/* Bottom bar: model selector */}
+            <div className="flex items-center border-t border-brand-border/30 px-3 py-1.5">
+              <div className="model-dropdown-container relative">
+                <button
+                  onClick={() => setIsModelDropdownOpen(!isModelDropdownOpen)}
+                  className="flex items-center gap-1 rounded-md px-2 py-0.5 text-[11px] text-brand-text-dim transition-colors hover:bg-brand-purple/10 hover:text-brand-text"
+                >
+                  {AVAILABLE_MODELS.find(m => m.value === selectedModel)?.label || 'Model'}
+                  <ChevronDown size={12} />
+                </button>
+
+                {isModelDropdownOpen && (
+                  <div className="absolute bottom-full left-0 mb-1 w-56 rounded-lg border border-brand-border bg-brand-card shadow-xl">
+                    {AVAILABLE_MODELS.map((model) => (
+                      <button
+                        key={model.value}
+                        onClick={() => {
+                          setSelectedModel(model.value)
+                          setIsModelDropdownOpen(false)
+                        }}
+                        className={`flex w-full items-center justify-between px-3 py-2 text-left text-xs transition-colors hover:bg-brand-purple/10 first:rounded-t-lg last:rounded-b-lg ${
+                          selectedModel === model.value ? 'bg-brand-purple/5 text-brand-purple' : 'text-brand-text'
+                        }`}
+                      >
+                        <div>
+                          <div className="font-medium">{model.label}</div>
+                          <div className="text-[10px] text-brand-text-dim">{model.description}</div>
+                        </div>
+                        {selectedModel === model.value && (
+                          <Check size={14} className="text-brand-purple" />
+                        )}
+                      </button>
+                    ))}
+                  </div>
+                )}
+              </div>
+            </div>
           </div>
 
           {/* Context size indicator */}
           {turns.length > 0 && (
-            <div className="mt-1.5 flex items-center justify-between px-1 text-[11px] text-brand-text-dim">
+            <div className="mt-1.5 flex items-center justify-between px-1 text-[13px] font-semibold text-white/40">
               <div className="flex items-center gap-2">
                 {isCompacting ? (
                   <span className="flex items-center gap-1">
@@ -1832,7 +2481,7 @@ Don't announce saves unless asked - just respond naturally.`
                   <span>
                     ~{contextTokens >= 1000 ? `${(contextTokens / 1000).toFixed(1)}k` : contextTokens} tokens
                     {' '}
-                    <span className="text-brand-text-dim/50">/ ~200k</span>
+                    <span className="text-white/25">/ ~200k</span>
                   </span>
                 )}
               </div>
@@ -1852,7 +2501,7 @@ Don't announce saves unless asked - just respond naturally.`
   )
 
   return (
-    <div className="flex h-screen flex-col bg-brand-bg">
+    <div className="flex h-full flex-col bg-brand-bg">
       <AppHeader
         user={user}
         onLogout={onLogout}
@@ -1879,6 +2528,7 @@ Don't announce saves unless asked - just respond naturally.`
         currentSessionTitle={currentSessionTitle}
         onLoadSession={handleLoadSession}
         onNewSession={handleNewSession}
+        onRenameSession={handleRenameSession}
       />
 
       {/* Resizable two-pane layout */}
@@ -1905,6 +2555,15 @@ Don't announce saves unless asked - just respond naturally.`
         isOpen={isSettingsOpen}
         onClose={() => setIsSettingsOpen(false)}
       />
+
+      {workingDirectory && previewFilePath && (
+        <FilePreviewDialog
+          isOpen={!!previewFilePath}
+          onClose={() => setPreviewFilePath(null)}
+          filePath={previewFilePath}
+          workingDirectory={workingDirectory}
+        />
+      )}
     </div>
   )
 }
@@ -1969,7 +2628,8 @@ const Header = memo(function Header({
   currentSessionId,
   currentSessionTitle,
   onLoadSession,
-  onNewSession
+  onNewSession,
+  onRenameSession
 }: {
   workingDirectory: string | null
   onSelectFolder: () => void
@@ -1978,8 +2638,12 @@ const Header = memo(function Header({
   currentSessionTitle: string
   onLoadSession: (sessionId: string) => void
   onNewSession: () => void
+  onRenameSession: (sessionId: string, newTitle: string) => void
 }) {
   const [showSessionDropdown, setShowSessionDropdown] = useState(false)
+  const [editingSessionId, setEditingSessionId] = useState<string | null>(null)
+  const [editingTitle, setEditingTitle] = useState('')
+  const editInputRef = useRef<HTMLInputElement>(null)
   const dropdownRef = useRef<HTMLDivElement>(null)
 
   useEffect(() => {
@@ -1991,6 +2655,31 @@ const Header = memo(function Header({
     if (showSessionDropdown) document.addEventListener('mousedown', handleClickOutside)
     return () => document.removeEventListener('mousedown', handleClickOutside)
   }, [showSessionDropdown])
+
+  useEffect(() => {
+    if (editingSessionId && editInputRef.current) {
+      editInputRef.current.focus()
+      editInputRef.current.select()
+    }
+  }, [editingSessionId])
+
+  const startRenaming = (sessionId: string, currentTitle: string, e: React.MouseEvent) => {
+    e.stopPropagation()
+    setEditingSessionId(sessionId)
+    setEditingTitle(currentTitle)
+  }
+
+  const confirmRename = (sessionId: string) => {
+    const trimmed = editingTitle.trim()
+    if (trimmed) {
+      onRenameSession(sessionId, trimmed)
+    }
+    setEditingSessionId(null)
+  }
+
+  const cancelRename = () => {
+    setEditingSessionId(null)
+  }
 
   if (!workingDirectory) return null
 
@@ -2063,17 +2752,58 @@ const Header = memo(function Header({
               {/* Current session */}
               {currentSessionId ? (
                 <div className="border-b border-brand-border/50 p-2">
-                  <div className="rounded-lg bg-brand-purple/10 px-3 py-2">
-                    <div className="flex items-center gap-2 mb-1">
-                      <span className="inline-block h-1.5 w-1.5 rounded-full bg-brand-purple animate-pulse" />
-                      <span className="text-xs font-medium text-brand-purple">Current Session</span>
+                  <div className="group rounded-lg bg-brand-purple/10 px-3 py-2">
+                    <div className="flex items-center justify-between gap-2 mb-1">
+                      <div className="flex items-center gap-2">
+                        <span className="inline-block h-1.5 w-1.5 rounded-full bg-brand-purple animate-pulse" />
+                        <span className="text-xs font-medium text-brand-purple">Current Session</span>
+                      </div>
+                      {editingSessionId !== currentSessionId && (
+                        <button
+                          onClick={(e) => startRenaming(currentSessionId, currentSessionTitle || 'Untitled Session', e)}
+                          className="cursor-pointer rounded p-0.5 text-brand-purple/50 opacity-0 transition-opacity group-hover:opacity-100 hover:text-brand-purple hover:bg-brand-purple/10"
+                          title="Rename session"
+                        >
+                          <Pencil size={12} />
+                        </button>
+                      )}
                     </div>
-                    <p className="text-sm font-medium text-brand-text truncate">
-                      {currentSessionTitle || 'Untitled Session'}
-                    </p>
-                    <p className="text-xs font-mono text-brand-text-dim truncate mt-0.5">
-                      {currentSessionId.slice(0, 8)}...
-                    </p>
+                    {editingSessionId === currentSessionId ? (
+                      <div className="flex items-center gap-1.5">
+                        <input
+                          ref={editInputRef}
+                          type="text"
+                          value={editingTitle}
+                          onChange={(e) => setEditingTitle(e.target.value)}
+                          onKeyDown={(e) => {
+                            if (e.key === 'Enter') confirmRename(currentSessionId)
+                            if (e.key === 'Escape') cancelRename()
+                          }}
+                          className="flex-1 rounded border border-brand-purple/40 bg-brand-input px-2 py-1 text-sm text-brand-text outline-none focus:border-brand-purple"
+                        />
+                        <button
+                          onClick={() => confirmRename(currentSessionId)}
+                          className="cursor-pointer rounded p-1 text-green-400 hover:bg-green-400/10"
+                        >
+                          <Check size={14} />
+                        </button>
+                        <button
+                          onClick={cancelRename}
+                          className="cursor-pointer rounded p-1 text-brand-text-dim hover:bg-white/5"
+                        >
+                          <X size={14} />
+                        </button>
+                      </div>
+                    ) : (
+                      <>
+                        <p className="text-sm font-medium text-brand-text truncate">
+                          {currentSessionTitle || 'Untitled Session'}
+                        </p>
+                        <p className="text-xs font-mono text-brand-text-dim truncate mt-0.5">
+                          {currentSessionId.slice(0, 8)}...
+                        </p>
+                      </>
+                    )}
                   </div>
                 </div>
               ) : (
@@ -2107,29 +2837,78 @@ const Header = memo(function Header({
                   sessions
                     .filter(s => s.sessionId !== currentSessionId)
                     .map((session) => (
-                      <button
+                      <div
                         key={session.sessionId}
-                        onClick={() => {
-                          onLoadSession(session.sessionId)
-                          setShowSessionDropdown(false)
-                        }}
-                        className="w-full rounded-lg px-3 py-2 text-left transition-colors hover:bg-brand-purple/10 cursor-pointer"
+                        className="group relative rounded-lg px-3 py-2 transition-colors hover:bg-brand-purple/10"
                       >
-                        <div className="flex items-start justify-between gap-2 mb-1">
-                          <p className="text-sm font-medium text-brand-text truncate flex-1">
-                            {session.title}
-                          </p>
-                          <span className="text-xs text-brand-text-dim whitespace-nowrap">
-                            {formatDate(session.timestamp)}
-                          </span>
-                        </div>
-                        <div className="flex items-center gap-3 text-xs text-brand-text-dim">
-                          <span>{session.turnsCount} turns</span>
-                          {session.totalCost > 0 && (
-                            <span>${session.totalCost.toFixed(4)}</span>
-                          )}
-                        </div>
-                      </button>
+                        {editingSessionId === session.sessionId ? (
+                          <div className="flex items-center gap-1.5" onClick={(e) => e.stopPropagation()}>
+                            <input
+                              ref={editInputRef}
+                              type="text"
+                              value={editingTitle}
+                              onChange={(e) => setEditingTitle(e.target.value)}
+                              onKeyDown={(e) => {
+                                if (e.key === 'Enter') confirmRename(session.sessionId)
+                                if (e.key === 'Escape') cancelRename()
+                              }}
+                              className="flex-1 rounded border border-brand-purple/40 bg-brand-input px-2 py-1 text-sm text-brand-text outline-none focus:border-brand-purple"
+                            />
+                            <button
+                              onClick={() => confirmRename(session.sessionId)}
+                              className="cursor-pointer rounded p-1 text-green-400 hover:bg-green-400/10"
+                            >
+                              <Check size={14} />
+                            </button>
+                            <button
+                              onClick={cancelRename}
+                              className="cursor-pointer rounded p-1 text-brand-text-dim hover:bg-white/5"
+                            >
+                              <X size={14} />
+                            </button>
+                          </div>
+                        ) : (
+                          <div
+                            onClick={() => {
+                              onLoadSession(session.sessionId)
+                              setShowSessionDropdown(false)
+                            }}
+                            className="w-full text-left cursor-pointer"
+                            role="button"
+                            tabIndex={0}
+                            onKeyDown={(e) => {
+                              if (e.key === 'Enter' || e.key === ' ') {
+                                onLoadSession(session.sessionId)
+                                setShowSessionDropdown(false)
+                              }
+                            }}
+                          >
+                            <div className="flex items-start justify-between gap-2 mb-1">
+                              <p className="text-sm font-medium text-brand-text truncate flex-1">
+                                {session.title}
+                              </p>
+                              <div className="flex items-center gap-1.5 shrink-0">
+                                <button
+                                  onClick={(e) => { e.stopPropagation(); startRenaming(session.sessionId, session.title, e) }}
+                                  className="cursor-pointer rounded p-0.5 text-brand-text-dim opacity-0 transition-opacity group-hover:opacity-100 hover:text-brand-text hover:bg-white/5"
+                                  title="Rename session"
+                                >
+                                  <Pencil size={12} />
+                                </button>
+                                <span className="text-xs text-brand-text-dim whitespace-nowrap">
+                                  {formatDate(session.timestamp)}
+                                </span>
+                              </div>
+                            </div>
+                            <div className="flex items-center gap-3 text-xs text-brand-text-dim">
+                              <span>{session.turnsCount} turns</span>
+                              {session.totalCost > 0 && (
+                                <span>${session.totalCost.toFixed(4)}</span>
+                              )}
+                            </div>
+                          </div>
+                        )}
+                      </div>
                     ))
                 )}
               </div>
@@ -2141,8 +2920,119 @@ const Header = memo(function Header({
   )
 })
 
-const TurnBlock = memo(function TurnBlock({ turn, liveElapsed }: { turn: Turn; liveElapsed: number | null }) {
+// Regex to detect file paths in text
+// Matches: ./foo, ../foo, /foo, C:\foo, .hidden/foo/bar.ext, and bare relative paths like src/foo/bar.ext
+const FILE_PATH_REGEX = /(?:^|\s)((?:\.{1,2}\/|\/|[A-Za-z]:\\)[\w\-./\\]+\.\w+|(?:\.?[a-zA-Z][\w\-.]*\/)+[\w\-.]+\.\w+)/g
+
+function makeFilePathsClickable(nodeChildren: React.ReactNode, onFileClick: (path: string) => void): React.ReactNode {
+  const processNode = (node: React.ReactNode): React.ReactNode => {
+    if (typeof node !== 'string') return node
+
+    const parts: React.ReactNode[] = []
+    let lastIndex = 0
+    const regex = new RegExp(FILE_PATH_REGEX.source, 'g')
+    let match: RegExpExecArray | null
+
+    while ((match = regex.exec(node)) !== null) {
+      const path = match[1]
+      const matchStart = match.index + (match[0].length - match[1].length)
+      if (matchStart > lastIndex) {
+        parts.push(node.slice(lastIndex, matchStart))
+      }
+      parts.push(
+        <span
+          key={matchStart}
+          className="cursor-pointer rounded bg-brand-purple/10 px-1 py-0.5 font-mono text-[0.9em] text-brand-purple-soft transition-colors hover:bg-brand-purple/20 hover:text-brand-purple"
+          onClick={(e) => {
+            e.stopPropagation()
+            onFileClick(path)
+          }}
+          title="Click to preview file"
+        >
+          {path}
+        </span>
+      )
+      lastIndex = match.index + match[0].length
+    }
+
+    if (parts.length === 0) return node
+    if (lastIndex < node.length) parts.push(node.slice(lastIndex))
+    return <>{parts}</>
+  }
+
+  return Array.isArray(nodeChildren)
+    ? nodeChildren.map(processNode)
+    : processNode(nodeChildren)
+}
+
+function ClickableMarkdown({ children, onFileClick }: { children: string; onFileClick?: (path: string) => void }) {
+  return (
+    <ReactMarkdown
+      components={{
+        // Make inline code with file-like paths clickable
+        code: ({ children: codeChildren, className }) => {
+          const text = String(codeChildren)
+          if (!className && onFileClick && /^(?:(?:\.{1,2}\/|\/|[A-Za-z]:\\)[\w\-./\\]+\.\w+|(?:\.?[a-zA-Z][\w\-.]*\/)+[\w\-.]+\.\w+)$/.test(text.trim())) {
+            return (
+              <code
+                className="cursor-pointer rounded bg-brand-purple/10 px-1.5 py-0.5 text-brand-purple-soft transition-colors hover:bg-brand-purple/20 hover:text-brand-purple"
+                onClick={(e) => {
+                  e.stopPropagation()
+                  onFileClick(text.trim())
+                }}
+                title="Click to preview file"
+              >
+                {text}
+              </code>
+            )
+          }
+          return <code className={className}>{codeChildren}</code>
+        },
+        // Intercept all links — prevent navigation, open file paths in preview
+        a: ({ href, children: aChildren }) => {
+          const handleClick = (e: React.MouseEvent) => {
+            e.preventDefault()
+            e.stopPropagation()
+            if (onFileClick && href) {
+              onFileClick(href)
+            }
+          }
+          return (
+            <span
+              className="cursor-pointer rounded bg-brand-purple/10 px-1 py-0.5 font-mono text-[0.9em] text-brand-purple-soft transition-colors hover:bg-brand-purple/20 hover:text-brand-purple"
+              onClick={handleClick}
+              title="Click to preview file"
+            >
+              {aChildren}
+            </span>
+          )
+        },
+        p: ({ children: pChildren }) => {
+          if (!onFileClick) return <p>{pChildren}</p>
+          return <p>{makeFilePathsClickable(pChildren, onFileClick)}</p>
+        },
+        li: ({ children: liChildren }) => {
+          if (!onFileClick) return <li>{liChildren}</li>
+          return <li>{makeFilePathsClickable(liChildren, onFileClick)}</li>
+        },
+        strong: ({ children: strongChildren }) => {
+          if (!onFileClick) return <strong>{strongChildren}</strong>
+          return <strong>{makeFilePathsClickable(strongChildren, onFileClick)}</strong>
+        },
+        em: ({ children: emChildren }) => {
+          if (!onFileClick) return <em>{emChildren}</em>
+          return <em>{makeFilePathsClickable(emChildren, onFileClick)}</em>
+        }
+      }}
+    >
+      {children}
+    </ReactMarkdown>
+  )
+}
+
+const TurnBlock = memo(function TurnBlock({ turn, liveElapsed, onFileClick, pendingQuestions = [], onQuestionSubmit, onRewind, isRewinding }: { turn: Turn; liveElapsed: number | null; onFileClick?: (path: string) => void; pendingQuestions?: UserQuestion[]; onQuestionSubmit?: (questionId: string, response: string) => void; onRewind?: (turnId: string, checkpointId: string) => void; isRewinding?: boolean }) {
   const [copiedId, setCopiedId] = useState<string | null>(null)
+  const [showRewindConfirm, setShowRewindConfirm] = useState(false)
   const hasTools = turn.toolEvents.length > 0
   const isWorking = !turn.isComplete
 
@@ -2180,31 +3070,95 @@ const TurnBlock = memo(function TurnBlock({ turn, liveElapsed }: { turn: Turn; l
           )}
           <div className="whitespace-pre-wrap">{turn.userMessage}</div>
 
-          {/* Copy button */}
-          <button
-            onClick={() => handleCopy(turn.userMessage, `user-${turn.id}`)}
-            className="absolute -left-8 top-2 opacity-0 group-hover:opacity-100 transition-opacity p-1.5 rounded-lg hover:bg-white/10"
-            title="Copy message"
-          >
-            {copiedId === `user-${turn.id}` ? (
-              <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round" className="text-white">
-                <polyline points="20 6 9 17 4 12"></polyline>
-              </svg>
-            ) : (
-              <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round" className="text-white/70">
-                <rect x="9" y="9" width="13" height="13" rx="2" ry="2"></rect>
-                <path d="M5 15H4a2 2 0 0 1-2-2V4a2 2 0 0 1 2-2h9a2 2 0 0 1 2 2v1"></path>
-              </svg>
+          {/* Action buttons (left of bubble) */}
+          <div className="absolute -left-16 top-1.5 flex flex-row gap-0.5 opacity-0 group-hover:opacity-100 transition-opacity">
+            {/* Rewind button */}
+            {onRewind && turn.checkpointId && turn.isComplete && (
+              <button
+                onClick={() => setShowRewindConfirm(true)}
+                disabled={isRewinding}
+                className="p-1.5 rounded-lg hover:bg-white/10 disabled:opacity-40"
+                title="Rewind files to before this message"
+              >
+                {isRewinding ? (
+                  <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round" className="text-yellow-300 animate-spin">
+                    <path d="M21 12a9 9 0 1 1-6.219-8.56" />
+                  </svg>
+                ) : (
+                  <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round" className="text-white/70">
+                    <polyline points="1 4 1 10 7 10" />
+                    <path d="M3.51 15a9 9 0 1 0 2.13-9.36L1 10" />
+                  </svg>
+                )}
+              </button>
             )}
-          </button>
+
+            {/* Copy button */}
+            <button
+              onClick={() => handleCopy(turn.userMessage, `user-${turn.id}`)}
+              className="p-1.5 rounded-lg hover:bg-white/10"
+              title="Copy message"
+            >
+              {copiedId === `user-${turn.id}` ? (
+                <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round" className="text-white">
+                  <polyline points="20 6 9 17 4 12"></polyline>
+                </svg>
+              ) : (
+                <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round" className="text-white/70">
+                  <rect x="9" y="9" width="13" height="13" rx="2" ry="2"></rect>
+                  <path d="M5 15H4a2 2 0 0 1-2-2V4a2 2 0 0 1 2-2h9a2 2 0 0 1 2 2v1"></path>
+                </svg>
+              )}
+            </button>
+          </div>
         </div>
       </div>
+
+      {/* Rewind confirmation dialog */}
+      {showRewindConfirm && (
+        <div className="flex justify-end">
+          <div className="max-w-[85%] rounded-lg border border-yellow-500/30 bg-yellow-500/10 px-4 py-3 text-sm">
+            <div className="flex items-start gap-3">
+              <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round" className="mt-0.5 shrink-0 text-yellow-400">
+                <polyline points="1 4 1 10 7 10" />
+                <path d="M3.51 15a9 9 0 1 0 2.13-9.36L1 10" />
+              </svg>
+              <div>
+                <p className="font-medium text-brand-text">Rewind file changes?</p>
+                <p className="mt-1 text-xs text-brand-text-muted">
+                  This will undo all file changes made from this message onward and remove those messages from the conversation.
+                  Only changes made via Edit/Write tools are tracked — Bash changes cannot be undone.
+                </p>
+                <div className="mt-3 flex items-center gap-2">
+                  <button
+                    onClick={() => {
+                      setShowRewindConfirm(false)
+                      if (onRewind && turn.checkpointId) {
+                        onRewind(turn.id, turn.checkpointId)
+                      }
+                    }}
+                    className="cursor-pointer rounded-lg bg-yellow-500/20 px-3 py-1.5 text-xs font-medium text-yellow-300 transition-colors hover:bg-yellow-500/30"
+                  >
+                    Rewind
+                  </button>
+                  <button
+                    onClick={() => setShowRewindConfirm(false)}
+                    className="cursor-pointer rounded-lg px-3 py-1.5 text-xs text-brand-text-muted transition-colors hover:bg-brand-border/30"
+                  >
+                    Cancel
+                  </button>
+                </div>
+              </div>
+            </div>
+          </div>
+        </div>
+      )}
 
       {/* Initial response — text before any tools */}
       {firstText && (
         <div className="flex justify-start group">
           <div className="relative prose-response max-w-[85%] rounded-lg border border-brand-border bg-brand-card px-4 py-3 text-sm text-brand-text select-text">
-            <ReactMarkdown>{firstText}</ReactMarkdown>
+            <ClickableMarkdown onFileClick={onFileClick}>{firstText}</ClickableMarkdown>
 
             {/* Copy button */}
             <button
@@ -2233,11 +3187,11 @@ const TurnBlock = memo(function TurnBlock({ turn, liveElapsed }: { turn: Turn; l
           {hasTools && (
             <div className="max-h-[400px] space-y-0.5 overflow-y-auto py-1">
               {groupToolEvents(turn.toolEvents).map((group, i) => (
-                <ToolEventLine key={i} group={group} />
+                <ToolEventLine key={i} group={group} onFileClick={onFileClick} />
               ))}
             </div>
           )}
-          {isWorking && (
+          {isWorking && pendingQuestions.length === 0 && (
             <div className="flex items-center gap-2 py-1 text-xs text-brand-text-muted">
               <span className="inline-block h-1.5 w-1.5 animate-pulse rounded-full bg-brand-purple" />
               Working...
@@ -2247,11 +3201,20 @@ const TurnBlock = memo(function TurnBlock({ turn, liveElapsed }: { turn: Turn; l
         </div>
       )}
 
+      {/* Pending user questions from ask_user MCP tool */}
+      {pendingQuestions.length > 0 && onQuestionSubmit && (
+        <div className="space-y-2">
+          {pendingQuestions.map((q) => (
+            <QuestionDialog key={q.questionId} question={q} onSubmit={onQuestionSubmit} />
+          ))}
+        </div>
+      )}
+
       {/* Final response — text after tools complete, only shown when turn is done */}
       {turn.isComplete && lastText && (
         <div className="flex justify-start group">
           <div className="relative prose-response max-w-[85%] rounded-lg border border-brand-border bg-brand-card px-4 py-3 text-sm text-brand-text select-text">
-            <ReactMarkdown>{lastText}</ReactMarkdown>
+            <ClickableMarkdown onFileClick={onFileClick}>{lastText}</ClickableMarkdown>
 
             {/* Copy button */}
             <button
@@ -2293,9 +3256,10 @@ const TurnBlock = memo(function TurnBlock({ turn, liveElapsed }: { turn: Turn; l
   )
 })
 
-const ToolEventLine = memo(function ToolEventLine({ group }: { group: ToolEventGroup }) {
+const ToolEventLine = memo(function ToolEventLine({ group, onFileClick }: { group: ToolEventGroup; onFileClick?: (path: string) => void }) {
   const { toolUse, toolResult } = group
   const detail = getToolDetail(toolUse.tool, toolUse.input)
+  const isFilePath = detail && ['Read', 'Write', 'Edit'].includes(toolUse.tool ?? '')
 
   return (
     <div className="flex items-start gap-1.5 py-0.5 text-xs">
@@ -2305,9 +3269,17 @@ const ToolEventLine = memo(function ToolEventLine({ group }: { group: ToolEventG
         <span className="text-brand-purple">⚡</span>
       )}
       <span className="font-mono text-brand-text-muted">{toolUse.tool}</span>
-      {detail && (
+      {detail && isFilePath && onFileClick ? (
+        <span
+          className="flex-1 break-all font-mono text-brand-purple-soft cursor-pointer transition-colors hover:text-brand-purple"
+          onClick={() => onFileClick(detail)}
+          title="Click to preview file"
+        >
+          {detail}
+        </span>
+      ) : detail ? (
         <span className="flex-1 break-all font-mono text-brand-text-dim">{detail}</span>
-      )}
+      ) : null}
     </div>
   )
 })
@@ -2328,6 +3300,15 @@ function getToolDetail(tool?: string, input?: Record<string, unknown>): string |
       return (input.pattern as string) || null
     case 'Grep':
       return (input.pattern as string) || null
+    case 'ask_user': {
+      const questions = input.questions as Array<{ question: string }> | undefined
+      if (questions && questions.length > 0) {
+        return questions.length === 1
+          ? questions[0].question
+          : `${questions.length} questions`
+      }
+      return 'Waiting for user input...'
+    }
     default:
       return null
   }

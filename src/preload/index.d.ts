@@ -1,6 +1,16 @@
 export interface StreamEvent {
-  event: 'text' | 'tool_use' | 'tool_result' | 'done' | 'error' | 'system'
+  event: 'text' | 'tool_use' | 'tool_result' | 'done' | 'error' | 'system' | 'user_question' | 'partial_text' | 'thinking' | 'tool_progress'
   data: Record<string, unknown>
+}
+
+export interface UserQuestion {
+  questionId: string
+  questions: Array<{
+    question: string
+    options?: Array<{ label: string; description?: string }>
+    multiSelect?: boolean
+    freeText?: boolean
+  }>
 }
 
 export interface UserInfo {
@@ -30,6 +40,24 @@ export interface Turn {
   startTime: number
   endTime: number | null
   costUsd: number | null
+  /** SDK checkpoint UUID for this turn — enables file rewind */
+  checkpointId?: string
+  /** Current partial/streaming assistant text (cleared when full text block arrives) */
+  currentPartialText?: string
+  /** Current thinking/reasoning text from extended thinking */
+  currentThinking?: string
+  /** Whether the model is currently thinking */
+  isThinking?: boolean
+  /** Progress updates for currently running tools */
+  toolProgress?: Record<string, { toolName: string; elapsedSeconds: number }>
+}
+
+export interface RewindFilesResult {
+  canRewind: boolean
+  error?: string
+  filesChanged?: string[]
+  insertions?: number
+  deletions?: number
 }
 
 export interface ToolEvent {
@@ -102,12 +130,26 @@ export interface Project {
   name: string
   description: string | null
   status: string
+  is_starred?: boolean
   created_at: string
   updated_at: string
   organisation_id: string
   organisation?: {
     id: string
     name: string
+  }
+  features_count?: number
+  feature_statuses?: {
+    draft: number
+    in_progress: number
+    ready: number
+    completed: number
+    rejected: number
+    archived: number
+  }
+  handoff?: {
+    generated_at: string | null
+    download_url: string | null
   }
 }
 
@@ -139,14 +181,18 @@ export interface ElectronAPI {
   // Folder selection
   selectFolder: () => Promise<string | null>
   selectFile: () => Promise<string | null>
+  selectFiles: () => Promise<string[] | null>
 
   // File operations
   readFile: (path: string) => Promise<string>
+  readPdf: (path: string) => Promise<{ text: string; numPages: number; info: Record<string, unknown>; error?: string }>
   writeFile: (path: string, content: string) => Promise<void>
   copyDirectory: (sourcePath: string, destinationPath: string) => Promise<boolean>
   getSkillsPath: () => Promise<string>
   getUserHome: () => Promise<string>
   writeImageFile: (path: string, imageData: Uint8Array) => Promise<void>
+  listDirectories: (dirPath: string) => Promise<string[]>
+  searchFiles: (rootDir: string, query: string, limit?: number) => Promise<string[]>
 
   // Agent
   sendMessage: (params: {
@@ -157,8 +203,13 @@ export interface ElectronAPI {
     sdkSessionId?: string
     systemPrompt?: string
     allowedTools?: string[]
+    model?: string
     previousTurns?: Turn[]
   }) => Promise<{ sessionId: string; success: boolean }>
+
+  abortAgent: (sessionId: string) => Promise<{ success: boolean }>
+  injectMessage: (sessionId: string, content: string) => Promise<{ injected: boolean }>
+  rewindFiles: (sessionId: string, userMessageId: string, dryRun?: boolean) => Promise<RewindFilesResult>
 
   createSession: (params: {
     workingDirectory: string
@@ -177,6 +228,7 @@ export interface ElectronAPI {
   loadSession: (workingDirectory: string, sessionId: string) => Promise<SessionData | null>
   listSessions: (workingDirectory: string) => Promise<SessionMetadata[]>
   deleteSession: (workingDirectory: string, sessionId: string) => Promise<{ success: boolean }>
+  renameSession: (workingDirectory: string, sessionId: string, newTitle: string) => Promise<{ success: boolean }>
 
   // Skills
   syncSkills: (apiUrl: string, apiToken: string) => Promise<SkillsSyncResult>
@@ -189,8 +241,17 @@ export interface ElectronAPI {
   // Projects
   fetchProjects: () => Promise<ProjectsResponse>
 
+  // User question responses
+  respondToQuestion: (questionId: string, response: string) => Promise<{ success: boolean }>
+
+  // Menu
+  executeMenuAction: (action: string) => Promise<void>
+
   // Stream events
   onStreamEvent: (callback: (event: StreamEvent) => void) => () => void
+
+  // File utilities
+  getPathForFile: (file: File) => string
 }
 
 declare global {

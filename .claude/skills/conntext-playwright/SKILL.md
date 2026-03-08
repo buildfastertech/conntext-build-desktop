@@ -1,7 +1,7 @@
 ---
 name: conntext-playwright
 description: Generate Playwright test sheets from ConnText PRDs or run browser tests. Use when the user says "generate test sheets", "create playwright tests", "run browser tests", "test PRDs", or wants to create/run E2E tests from PRD user stories. Supports role-based test separation for multi-user applications.
-allowed-tools: Bash, Read, Write, Edit, Glob, Grep, Task, AskUserQuestion
+allowed-tools: Bash, Read, Write, Edit, Glob, Grep, Task, mcp__customTools__ask_user
 ---
 
 # ConnText Playwright
@@ -128,7 +128,7 @@ This skill works with [ConnText](https://conntext.app) PRD documents to:
 
 ### Step 2: Ask Primary Action
 
-Use AskUserQuestion tool:
+Use mcp__customTools__ask_user tool:
 
 **Question**: "What would you like to do?"
 **Header**: "Action"
@@ -308,7 +308,7 @@ Next steps:
 
 ### B.2: Ask Test Scope
 
-Use AskUserQuestion tool:
+Use mcp__customTools__ask_user tool:
 
 **Question**: "Would you like to run a full test or test a specific section?"
 **Header**: "Scope"

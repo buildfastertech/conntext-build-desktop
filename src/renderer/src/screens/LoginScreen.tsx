@@ -57,7 +57,7 @@ export function LoginScreen({ onAuthenticated }: LoginScreenProps) {
   }
 
   return (
-    <div className="relative flex h-screen items-center justify-center bg-brand-bg">
+    <div className="relative flex h-full items-center justify-center bg-brand-bg">
       {/* Ambient purple glow */}
       <div className="pointer-events-none absolute inset-0 overflow-hidden">
         <div

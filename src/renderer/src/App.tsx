@@ -6,14 +6,19 @@ import { ProjectsScreen } from './screens/ProjectsScreen'
 import { BuildScreen } from './screens/BuildScreen'
 import { MemoryDialog } from './components/MemoryDialog'
 import { SettingsDialog } from './components/SettingsDialog'
+import { TitleMenuBar } from './components/TitleMenuBar'
 
 export function App() {
   const [isAuthenticated, setIsAuthenticated] = useState(false)
   const [hasAnthropicKey, setHasAnthropicKey] = useState(false)
   const [isLoading, setIsLoading] = useState(true)
   const [user, setUser] = useState<UserInfo | null>(null)
-  const [selectedProject, setSelectedProject] = useState<Project | null>(null)
-  const [workingDirectory, setWorkingDirectory] = useState<string | null>(null)
+  const [selectedProject, setSelectedProject] = useState<Project | null>(() => {
+    try { const s = localStorage.getItem('selectedProject'); return s ? JSON.parse(s) : null } catch { return null }
+  })
+  const [workingDirectory, setWorkingDirectory] = useState<string | null>(
+    () => localStorage.getItem('workingDirectory')
+  )
 
   // Shared header state
   const [isMemoryDialogOpen, setIsMemoryDialogOpen] = useState(false)
@@ -23,41 +28,64 @@ export function App() {
   const [skillsVersion, setSkillsVersion] = useState(0)
   const [skillsLastSync, setSkillsLastSync] = useState<string | null>(null)
   const [isSyncingSkills, setIsSyncingSkills] = useState(false)
+  const [syncSkillsError, setSyncSkillsError] = useState<string | null>(null)
   const [workspaces, setWorkspaces] = useState<Workspace[]>([])
   const [activeWorkspace, setActiveWorkspace] = useState<Workspace | null>(null)
+  const [projectDirectories, setProjectDirectories] = useState<Record<string, string>>(() => {
+    try { const s = localStorage.getItem('projectDirectories'); return s ? JSON.parse(s) : {} } catch { return {} }
+  })
 
   useEffect(() => {
-    Promise.all([
-      window.api.getCredentials(),
-      window.api.getAnthropicKey()
-    ]).then(([credentials, anthropicKey]) => {
-      setIsAuthenticated(!!credentials)
+    const init = async () => {
+      const [credentials, anthropicKey] = await Promise.all([
+        window.api.getCredentials(),
+        window.api.getAnthropicKey()
+      ])
+
+      const authed = !!credentials
+      setIsAuthenticated(authed)
       setUser(credentials?.user ?? null)
       setHasAnthropicKey(!!anthropicKey)
-      setIsLoading(false)
-    })
-  }, [])
 
-  // Fetch ConnText workspaces when authenticated, restore persisted selection
-  useEffect(() => {
-    if (isAuthenticated) {
-      Promise.all([
-        window.api.fetchWorkspaces(),
-        window.api.getAppState()
-      ]).then(([result, appState]) => {
-        if (result.success && result.data.length > 0) {
-          setWorkspaces(result.data)
-          // Restore persisted workspace, or fall back to first
-          const persisted = appState.activeWorkspaceId
-            ? result.data.find(ws => ws.id === appState.activeWorkspaceId)
-            : null
-          setActiveWorkspace(persisted ?? result.data[0])
+      // Fetch workspaces before finishing load so the UI doesn't flash
+      if (authed && credentials) {
+        try {
+          const appState = await window.api.getAppState()
+          const controller = new AbortController()
+          const timeoutId = setTimeout(() => controller.abort(), 10000) // 10 second timeout
+
+          const response = await fetch(`${credentials.apiUrl}/api/workspaces`, {
+            headers: {
+              'Accept': 'application/json',
+              'Authorization': `Bearer ${credentials.apiToken}`
+            },
+            signal: controller.signal
+          })
+
+          clearTimeout(timeoutId)
+
+          if (response.ok) {
+            const data = await response.json()
+            const wsList: Workspace[] = data.workspaces ?? data.data ?? []
+
+            if (wsList.length > 0) {
+              setWorkspaces(wsList)
+              const persisted = appState.activeWorkspaceId
+                ? wsList.find(ws => ws.id === appState.activeWorkspaceId)
+                : null
+              setActiveWorkspace(persisted ?? wsList[0])
+            }
+          }
+        } catch (error) {
+          console.error('Failed to fetch workspaces:', error)
         }
-      }).catch((error) => {
-        console.error('Failed to fetch workspaces:', error)
-      })
+      }
+
+      setIsLoading(false)
     }
-  }, [isAuthenticated])
+
+    init()
+  }, [])
 
   // Load skills info on mount
   useEffect(() => {
@@ -74,6 +102,7 @@ export function App() {
 
   const handleSyncSkills = async () => {
     setIsSyncingSkills(true)
+    setSyncSkillsError(null)
     try {
       await window.api.syncSkills()
       const info = await window.api.getSkillsInfo()
@@ -81,11 +110,37 @@ export function App() {
       setSkillsVersion(info.version)
       setSkillsLastSync(info.lastSync)
     } catch (error) {
+      const errorMessage = error instanceof Error ? error.message : 'Failed to sync skills'
       console.error('Failed to sync skills:', error)
+      setSyncSkillsError(errorMessage)
+      // Reset skills info to indicate sync failed
+      setSkillsCount(0)
+      setSkillsLastSync(null)
     } finally {
       setIsSyncingSkills(false)
     }
   }
+
+  // Persist key state to localStorage
+  useEffect(() => {
+    if (selectedProject) {
+      localStorage.setItem('selectedProject', JSON.stringify(selectedProject))
+    } else {
+      localStorage.removeItem('selectedProject')
+    }
+  }, [selectedProject])
+
+  useEffect(() => {
+    if (workingDirectory) {
+      localStorage.setItem('workingDirectory', workingDirectory)
+    } else {
+      localStorage.removeItem('workingDirectory')
+    }
+  }, [workingDirectory])
+
+  useEffect(() => {
+    localStorage.setItem('projectDirectories', JSON.stringify(projectDirectories))
+  }, [projectDirectories])
 
   const handleSwitchWorkspace = (workspace: Workspace) => {
     setActiveWorkspace(workspace)
@@ -96,6 +151,12 @@ export function App() {
     window.api.clearCredentials()
     window.api.clearAnthropicKey()
     window.api.clearAppState()
+    localStorage.removeItem('selectedProject')
+    localStorage.removeItem('workingDirectory')
+    localStorage.removeItem('projectDirectories')
+    localStorage.removeItem('selectedModel')
+    localStorage.removeItem('activeFolders')
+    localStorage.removeItem('chosenFolders')
     setIsAuthenticated(false)
     setHasAnthropicKey(false)
     setUser(null)
@@ -109,57 +170,78 @@ export function App() {
     setActiveWorkspace(null)
   }
 
+  const handleOpenFolder = () => {
+    window.api.selectFolder().then((folder) => {
+      if (folder) {
+        setWorkingDirectory(folder)
+      }
+    })
+  }
+
   if (isLoading) {
     return (
-      <div className="flex h-screen items-center justify-center bg-brand-bg">
-        <svg className="h-5 w-5 animate-spin text-brand-purple" viewBox="0 0 24 24" fill="none">
-          <circle className="opacity-25" cx="12" cy="12" r="10" stroke="currentColor" strokeWidth="3" />
-          <path className="opacity-75" fill="currentColor" d="M4 12a8 8 0 018-8V0C5.373 0 0 5.373 0 12h4z" />
-        </svg>
+      <div className="flex h-screen flex-col bg-brand-bg">
+        <TitleMenuBar />
+        <div className="flex flex-1 items-center justify-center">
+          <svg className="h-5 w-5 animate-spin text-brand-purple" viewBox="0 0 24 24" fill="none">
+            <circle className="opacity-25" cx="12" cy="12" r="10" stroke="currentColor" strokeWidth="3" />
+            <path className="opacity-75" fill="currentColor" d="M4 12a8 8 0 018-8V0C5.373 0 0 5.373 0 12h4z" />
+          </svg>
+        </div>
       </div>
     )
   }
 
   if (!isAuthenticated) {
     return (
-      <LoginScreen
-        onAuthenticated={async () => {
-          const credentials = await window.api.getCredentials()
-          setIsAuthenticated(true)
-          setUser(credentials?.user ?? null)
-        }}
-      />
+      <div className="flex h-screen flex-col bg-brand-bg">
+        <TitleMenuBar />
+        <div className="flex-1 overflow-auto">
+          <LoginScreen
+            onAuthenticated={async () => {
+              const credentials = await window.api.getCredentials()
+              setIsAuthenticated(true)
+              setUser(credentials?.user ?? null)
+            }}
+          />
+        </div>
+      </div>
     )
   }
 
   if (!hasAnthropicKey) {
     return (
-      <SetupScreen
-        userName={user?.name ?? 'User'}
-        onComplete={() => setHasAnthropicKey(true)}
-        onBack={() => {
-          window.api.clearCredentials()
-          setIsAuthenticated(false)
-          setUser(null)
-        }}
-      />
+      <div className="flex h-screen flex-col bg-brand-bg">
+        <TitleMenuBar />
+        <div className="flex-1 overflow-auto">
+          <SetupScreen
+            userName={user?.name ?? 'User'}
+            user={user}
+            onComplete={() => setHasAnthropicKey(true)}
+            onBack={() => {
+              window.api.clearCredentials()
+              setIsAuthenticated(false)
+              setUser(null)
+            }}
+            workspaces={workspaces}
+            activeWorkspace={activeWorkspace}
+            onSwitchWorkspace={handleSwitchWorkspace}
+          />
+        </div>
+      </div>
     )
   }
 
   if (!selectedProject && !workingDirectory) {
     return (
-      <>
+      <div className="flex h-screen flex-col bg-brand-bg">
+        <TitleMenuBar onOpenFolder={handleOpenFolder} />
+        <div className="flex-1 overflow-auto">
         <ProjectsScreen
           user={user}
           onSelectProject={(project) => {
             setSelectedProject(project)
-            // We'll handle setting up working directory for the project later
-            // For now, just prompt to select a folder
-            window.api.selectFolder().then((folder) => {
-              if (folder) {
-                setWorkingDirectory(folder)
-              }
-            })
+            setWorkingDirectory(projectDirectories[project.id] ?? null)
           }}
           onSelectFolder={() => {
             window.api.selectFolder().then((folder) => {
@@ -197,22 +279,35 @@ export function App() {
           isSyncingSkills={isSyncingSkills}
           onSyncSkills={handleSyncSkills}
         />
-      </>
+        </div>
+      </div>
     )
   }
 
   return (
-    <BuildScreen
-      user={user}
-      onLogout={handleLogout}
-      workingDirectory={workingDirectory}
-      onBackToProjects={() => {
-        setWorkingDirectory(null)
-        setSelectedProject(null)
-      }}
-      workspaces={workspaces}
-      activeWorkspace={activeWorkspace}
-      onSwitchWorkspace={setActiveWorkspace}
-    />
+    <div className="flex h-screen flex-col bg-brand-bg">
+      <TitleMenuBar onOpenFolder={handleOpenFolder} />
+      <div className="flex-1 overflow-hidden">
+        <BuildScreen
+          user={user}
+          onLogout={handleLogout}
+          workingDirectory={workingDirectory}
+          selectedProject={selectedProject}
+          onBackToProjects={() => {
+            setWorkingDirectory(null)
+            setSelectedProject(null)
+          }}
+          onWorkingDirectoryChange={(dir) => {
+            setWorkingDirectory(dir)
+            if (selectedProject) {
+              setProjectDirectories(prev => ({ ...prev, [selectedProject.id]: dir }))
+            }
+          }}
+          workspaces={workspaces}
+          activeWorkspace={activeWorkspace}
+          onSwitchWorkspace={handleSwitchWorkspace}
+        />
+      </div>
+    </div>
   )
 }

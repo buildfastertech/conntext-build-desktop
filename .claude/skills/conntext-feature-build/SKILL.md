@@ -72,7 +72,7 @@ Task
 
 3. **If all permissions are already present**: Skip to Step 1 silently — no prompt needed.
 
-4. **If any permissions are missing**, use AskUserQuestion:
+4. **If any permissions are missing**, use mcp__customTools__ask_user:
    - **Question**: "This skill needs the following tool permissions to run without interruption:\n\n`[list missing permissions, one per line]`\n\nWould you like me to add these to your project settings (.claude/settings.local.json) so you won't be prompted during execution?"
    - **Header**: "Permissions"
    - **Options**:
@@ -129,7 +129,7 @@ Before asking user preferences, attempt to extract a ticket/issue reference from
 
 ### Step 3: Ask User Preferences
 
-Use AskUserQuestion tool to ask **four questions**:
+Use mcp__customTools__ask_user tool to ask **four questions**:
 
 #### Question 1: Execution Mode
 

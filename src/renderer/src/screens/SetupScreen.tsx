@@ -1,12 +1,18 @@
 import { useState } from 'react'
+import type { UserInfo, Workspace } from '../../../preload/index.d'
+import { AppHeader } from '../components/AppHeader'
 
 interface SetupScreenProps {
   onComplete: () => void
   onBack: () => void
   userName: string
+  user?: UserInfo | null
+  workspaces?: Workspace[]
+  activeWorkspace?: Workspace | null
+  onSwitchWorkspace?: (workspace: Workspace) => void
 }
 
-export function SetupScreen({ onComplete, onBack, userName }: SetupScreenProps) {
+export function SetupScreen({ onComplete, onBack, userName, user, workspaces = [], activeWorkspace, onSwitchWorkspace }: SetupScreenProps) {
   const [apiKey, setApiKey] = useState('')
   const [showKey, setShowKey] = useState(false)
   const [error, setError] = useState('')
@@ -35,7 +41,16 @@ export function SetupScreen({ onComplete, onBack, userName }: SetupScreenProps) 
   }
 
   return (
-    <div className="relative flex h-screen items-center justify-center bg-brand-bg">
+    <div className="relative flex h-full flex-col bg-brand-bg">
+      <AppHeader
+        user={user ?? null}
+        onLogout={onBack}
+        variant="projects"
+        workspaces={workspaces}
+        activeWorkspace={activeWorkspace}
+        onSwitchWorkspace={onSwitchWorkspace}
+      />
+      <div className="flex flex-1 items-center justify-center">
       {/* Ambient glow */}
       <div className="pointer-events-none absolute inset-0 overflow-hidden">
         <div
@@ -136,6 +151,7 @@ export function SetupScreen({ onComplete, onBack, userName }: SetupScreenProps) 
             </button>
           </div>
         </div>
+      </div>
       </div>
     </div>
   )
