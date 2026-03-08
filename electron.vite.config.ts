@@ -4,7 +4,15 @@ import tailwindcss from '@tailwindcss/vite'
 
 export default defineConfig({
   main: {
-    plugins: [externalizeDepsPlugin({ exclude: ['@anthropic-ai/claude-agent-sdk'] })]
+    plugins: [externalizeDepsPlugin({
+      exclude: [
+        '@anthropic-ai/claude-agent-sdk',
+        '@anthropic-ai/sdk',
+        'electron-store',
+        'adm-zip',
+        'uuid'
+      ]
+    })]
   },
   preload: {
     plugins: [externalizeDepsPlugin()]

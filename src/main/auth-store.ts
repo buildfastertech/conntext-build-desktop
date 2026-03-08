@@ -41,4 +41,16 @@ export class AuthStore {
     this.store.delete('apiToken')
     this.store.delete('user')
   }
+
+  getAnthropicKey(): string | null {
+    return this.store.get('anthropicApiKey') as string | undefined || null
+  }
+
+  saveAnthropicKey(apiKey: string): void {
+    this.store.set('anthropicApiKey', apiKey)
+  }
+
+  clearAnthropicKey(): void {
+    this.store.delete('anthropicApiKey')
+  }
 }

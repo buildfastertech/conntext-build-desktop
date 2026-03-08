@@ -9,6 +9,12 @@
     "out/**/*",
     "!node_modules/**/*"
   ],
+  "extraResources": [
+    {
+      "from": ".claude/skills",
+      "to": "skills"
+    }
+  ],
   "win": {
     "target": ["nsis"],
     "icon": "resources/icon.ico"

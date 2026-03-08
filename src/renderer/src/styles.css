@@ -86,3 +86,116 @@ input, textarea, button, a, select, [role="button"] {
 .animate-ambient-pulse {
   animation: ambient-pulse 4s ease-in-out infinite;
 }
+
+/* Markdown prose styling for agent responses */
+.prose-response {
+  line-height: 1.65;
+}
+
+.prose-response > :first-child {
+  margin-top: 0;
+}
+
+.prose-response > :last-child {
+  margin-bottom: 0;
+}
+
+.prose-response p {
+  margin: 0.5em 0;
+}
+
+.prose-response h1, .prose-response h2, .prose-response h3,
+.prose-response h4, .prose-response h5, .prose-response h6 {
+  font-weight: 600;
+  margin: 1em 0 0.5em;
+  color: var(--color-brand-text);
+}
+
+.prose-response h1 { font-size: 1.25em; }
+.prose-response h2 { font-size: 1.15em; }
+.prose-response h3 { font-size: 1.05em; }
+
+.prose-response strong {
+  color: var(--color-brand-text);
+  font-weight: 600;
+}
+
+.prose-response code {
+  background: var(--color-brand-bg);
+  border: 1px solid var(--color-brand-border);
+  border-radius: 4px;
+  padding: 0.15em 0.35em;
+  font-size: 0.88em;
+  font-family: 'SF Mono', 'Fira Code', 'Cascadia Code', Consolas, monospace;
+}
+
+.prose-response pre {
+  background: var(--color-brand-bg);
+  border: 1px solid var(--color-brand-border);
+  border-radius: 8px;
+  padding: 0.75em 1em;
+  margin: 0.75em 0;
+  overflow-x: auto;
+}
+
+.prose-response pre code {
+  background: none;
+  border: none;
+  padding: 0;
+  font-size: 0.85em;
+  color: var(--color-brand-text-secondary);
+}
+
+.prose-response ul, .prose-response ol {
+  margin: 0.5em 0;
+  padding-left: 1.5em;
+}
+
+.prose-response li {
+  margin: 0.25em 0;
+}
+
+.prose-response ul li {
+  list-style-type: disc;
+}
+
+.prose-response ol li {
+  list-style-type: decimal;
+}
+
+.prose-response a {
+  color: var(--color-brand-purple-soft);
+  text-decoration: underline;
+  text-underline-offset: 2px;
+}
+
+.prose-response blockquote {
+  border-left: 3px solid var(--color-brand-purple);
+  padding-left: 0.75em;
+  margin: 0.5em 0;
+  color: var(--color-brand-text-muted);
+}
+
+.prose-response hr {
+  border: none;
+  border-top: 1px solid var(--color-brand-border);
+  margin: 1em 0;
+}
+
+.prose-response table {
+  width: 100%;
+  border-collapse: collapse;
+  margin: 0.75em 0;
+  font-size: 0.9em;
+}
+
+.prose-response th, .prose-response td {
+  border: 1px solid var(--color-brand-border);
+  padding: 0.4em 0.65em;
+  text-align: left;
+}
+
+.prose-response th {
+  background: var(--color-brand-bg);
+  font-weight: 600;
+}
