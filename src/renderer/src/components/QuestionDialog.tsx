@@ -4,9 +4,10 @@ import type { UserQuestion } from '../../../preload/index.d'
 interface QuestionDialogProps {
   question: UserQuestion
   onSubmit: (questionId: string, response: string) => void
+  onCancel?: (questionId: string) => void
 }
 
-export function QuestionDialog({ question, onSubmit }: QuestionDialogProps) {
+export function QuestionDialog({ question, onSubmit, onCancel }: QuestionDialogProps) {
   const { questionId, questions } = question
 
   // Track selections per question index
@@ -72,6 +73,12 @@ export function QuestionDialog({ question, onSubmit }: QuestionDialogProps) {
     const response = JSON.stringify({ status: 'answered', answers })
     onSubmit(questionId, response)
   }, [questionId, questions, selections, freeTextValues, onSubmit])
+
+  const handleCancel = useCallback(() => {
+    if (onCancel) {
+      onCancel(questionId)
+    }
+  }, [questionId, onCancel])
 
   // Check if at least one question has a selection or free text
   const hasAnyInput = questions.some((_, i) => {
@@ -176,13 +183,26 @@ export function QuestionDialog({ question, onSubmit }: QuestionDialogProps) {
           })}
         </div>
 
-        {/* Submit button */}
-        <div className="px-4 pb-4">
+        {/* Submit / Cancel buttons */}
+        <div className="px-4 pb-4 flex gap-2">
+          {onCancel && (
+            <button
+              onClick={handleCancel}
+              disabled={isSubmitting}
+              className={`
+                px-4 py-2 rounded-lg text-sm font-medium transition-all duration-150 cursor-pointer
+                border border-brand-border hover:border-brand-text-dim hover:bg-brand-card text-brand-text-secondary
+                ${isSubmitting ? 'opacity-50 cursor-not-allowed' : ''}
+              `}
+            >
+              Cancel
+            </button>
+          )}
           <button
             onClick={handleSubmit}
             disabled={!hasAnyInput || isSubmitting}
             className={`
-              w-full py-2 rounded-lg text-sm font-medium transition-all duration-150 cursor-pointer
+              flex-1 py-2 rounded-lg text-sm font-medium transition-all duration-150 cursor-pointer
               ${hasAnyInput && !isSubmitting
                 ? 'bg-brand-purple hover:bg-brand-purple-dim text-white'
                 : 'bg-brand-border text-brand-text-dim cursor-not-allowed'

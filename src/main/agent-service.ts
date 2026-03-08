@@ -77,6 +77,8 @@ function findClaudeExecutable(customPath?: string | null): string {
 export interface StreamEvent {
   event: 'text' | 'tool_use' | 'tool_result' | 'done' | 'error' | 'system' | 'user_question'
   data: Record<string, unknown>
+  /** Session ID that emitted this event — used by the renderer to filter cross-project events */
+  sessionId?: string
 }
 
 interface QueuedMessage {
@@ -243,6 +245,7 @@ export class AgentService {
     workingDirectory: string
     createdAt: Date
     allowedTools: string[]
+    isProcessing: boolean
   }> {
     console.log('[AgentService] Listing active sessions, total:', this.sessions.size)
     const result = Array.from(this.sessions.values()).map(session => ({
@@ -250,7 +253,8 @@ export class AgentService {
       sdkSessionId: session.sdkSessionId,
       workingDirectory: session.config.workingDirectory,
       createdAt: session.createdAt,
-      allowedTools: session.config.allowedTools
+      allowedTools: session.config.allowedTools,
+      isProcessing: session.isProcessing
     }))
     console.log('[AgentService] Returning', result.length, 'sessions')
     return result
@@ -412,6 +416,12 @@ Please proceed to complete the user's request using the appropriate tools.`
     const abortController = new AbortController()
     session.abortController = abortController
 
+    // Wrap onEvent to inject sessionId into every stream event
+    // so the renderer can filter out events from stale/other sessions
+    const emitEvent = (event: StreamEvent): void => {
+      onEvent({ ...event, sessionId: session.id })
+    }
+
     try {
       const claudePath = findClaudeExecutable(this.customClaudeCodePath)
 
@@ -557,7 +567,7 @@ Please proceed to complete the user's request using the appropriate tools.`
 
       // Wire up the ask_user notifier so MCP tool can push question events to the renderer
       setQuestionNotifier((questionData) => {
-        onEvent({
+        emitEvent({
           event: 'user_question',
           data: questionData
         } as StreamEvent)
@@ -597,7 +607,7 @@ Please proceed to complete the user's request using the appropriate tools.`
       session.lastQuery = stream
 
       for await (const message of stream) {
-        this.handleSDKMessage(message, session, onEvent)
+        this.handleSDKMessage(message, session, emitEvent)
         // Break immediately on result so the finally block clears isProcessing
         // before the next sendMessage call arrives. Without this, the stream
         // may linger open after the result, leaving isProcessing=true and
@@ -611,7 +621,7 @@ Please proceed to complete the user's request using the appropriate tools.`
     } catch (error) {
       const errorMessage = error instanceof Error ? error.message : 'Unknown error'
       console.error('[AgentService] Error:', errorMessage)
-      onEvent({ event: 'error', data: { error: errorMessage } })
+      emitEvent({ event: 'error', data: { error: errorMessage } })
       return { sessionId: session.id, success: false }
     } finally {
       // Clear the question notifier so stale references don't leak

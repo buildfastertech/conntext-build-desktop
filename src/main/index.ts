@@ -537,6 +537,40 @@ ipcMain.handle('projects:fetch', async () => {
   }
 })
 
+// Project features (for features panel)
+ipcMain.handle('features:fetch', async (_event, workspaceId: string, projectId: string) => {
+  try {
+    const credentials = authStore.getCredentials()
+    if (!credentials) {
+      return { success: false, data: [], error: 'Not authenticated' }
+    }
+
+    const response = await fetch(
+      `${credentials.apiUrl}/api/workspaces/${workspaceId}/projects/${projectId}/features`,
+      {
+        method: 'GET',
+        headers: {
+          'Accept': 'application/json',
+          'Authorization': `Bearer ${credentials.apiToken}`
+        }
+      }
+    )
+
+    if (!response.ok) {
+      return { success: false, data: [], error: `Failed to fetch features: ${response.statusText}` }
+    }
+
+    const data = await response.json()
+    return { success: true, data: data.features || [] }
+  } catch (error) {
+    return {
+      success: false,
+      data: [],
+      error: error instanceof Error ? error.message : 'Unknown error'
+    }
+  }
+})
+
 // Workspace folders (for folder context selector)
 ipcMain.handle('workspace:fetch-folders', async (_event, projectId: string) => {
   try {

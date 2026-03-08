@@ -1,5 +1,6 @@
 import { useEffect, useRef, useState, useMemo, useCallback } from 'react'
 import ReactMarkdown from 'react-markdown'
+import remarkGfm from 'remark-gfm'
 import { X, FileText, Copy, Check, Search, ChevronUp, ChevronDown, Code2 } from 'lucide-react'
 import hljs from 'highlight.js'
 import 'highlight.js/styles/github-dark.css'
@@ -499,7 +500,7 @@ export function FilePreviewDialog({ isOpen, onClose, filePath, workingDirectory 
 
                     {content && isMarkdown && (
                         <div className="prose-response p-5 text-sm text-brand-text select-text">
-                            <ReactMarkdown>{content}</ReactMarkdown>
+                            <ReactMarkdown remarkPlugins={[remarkGfm]}>{content}</ReactMarkdown>
                         </div>
                     )}
 

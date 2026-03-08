@@ -1,6 +1,8 @@
 export interface StreamEvent {
   event: 'text' | 'tool_use' | 'tool_result' | 'done' | 'error' | 'system' | 'user_question' | 'partial_text' | 'thinking' | 'tool_progress'
   data: Record<string, unknown>
+  /** Session ID that emitted this event — used to filter cross-project events */
+  sessionId?: string
 }
 
 export interface UserQuestion {
@@ -82,6 +84,7 @@ export interface ActiveSessionInfo {
   workingDirectory: string
   createdAt: Date
   allowedTools: string[]
+  isProcessing: boolean
 }
 
 export interface StoredCredentials {
@@ -156,6 +159,43 @@ export interface Project {
 export interface ProjectsResponse {
   success: boolean
   data: Project[]
+  error?: string
+}
+
+export interface ProjectFeature {
+  id: string
+  title: string
+  description: string | null
+  content: string | null
+  status: {
+    value: string
+    label: string
+    color: string
+  }
+  priority: {
+    value: string
+    label: string
+    color: string
+  } | null
+  work_item_type: {
+    value: string
+    label: string
+  } | null
+  brainstorm_category: string | null
+  parent_feature_id: string | null
+  order_index: number
+  prd_summary: string | null
+  prd_summary_status: string
+  spec: string | null
+  spec_status: string
+  labels: Array<{ id: string; name: string }>
+  created_at: string
+  updated_at: string
+}
+
+export interface FeaturesResponse {
+  success: boolean
+  data: ProjectFeature[]
   error?: string
 }
 
@@ -240,6 +280,9 @@ export interface ElectronAPI {
 
   // Projects
   fetchProjects: () => Promise<ProjectsResponse>
+
+  // Features
+  fetchFeatures: (workspaceId: string, projectId: string) => Promise<FeaturesResponse>
 
   // User question responses
   respondToQuestion: (questionId: string, response: string) => Promise<{ success: boolean }>

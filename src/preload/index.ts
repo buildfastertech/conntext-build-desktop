@@ -3,6 +3,8 @@ import { contextBridge, ipcRenderer, webUtils } from 'electron'
 export interface StreamEvent {
   event: 'text' | 'tool_use' | 'tool_result' | 'done' | 'error' | 'system' | 'user_question'
   data: Record<string, unknown>
+  /** Session ID that emitted this event — used to filter cross-project events */
+  sessionId?: string
 }
 
 const api = {
@@ -98,6 +100,10 @@ const api = {
   // Projects
   fetchProjects: () =>
     ipcRenderer.invoke('projects:fetch'),
+
+  // Features
+  fetchFeatures: (workspaceId: string, projectId: string) =>
+    ipcRenderer.invoke('features:fetch', workspaceId, projectId),
 
   // User question responses
   respondToQuestion: (questionId: string, response: string) =>

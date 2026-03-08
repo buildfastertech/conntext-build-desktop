@@ -1,7 +1,8 @@
 import { useState, useRef, useEffect, useCallback, memo } from 'react'
 import ReactMarkdown from 'react-markdown'
-import { FolderOpen, Pencil, Check, X, ChevronDown } from 'lucide-react'
-import type { StreamEvent, UserInfo, SessionMetadata, Turn, ToolEvent, Workspace, UserQuestion, Project } from '../../../preload/index.d'
+import remarkGfm from 'remark-gfm'
+import { FolderOpen, Pencil, Check, X, ChevronDown, RefreshCw, AlertCircle, Layers, Blocks, Lightbulb, Users, Heart, TrendingUp, DollarSign, Cpu, Palette, Link2, Cog, MessageSquare, Hammer } from 'lucide-react'
+import type { StreamEvent, UserInfo, SessionMetadata, Turn, ToolEvent, Workspace, UserQuestion, Project, ProjectFeature } from '../../../preload/index.d'
 import { ResizablePanes } from '../components/ResizablePanes'
 import { MemoryDialog } from '../components/MemoryDialog'
 import { SettingsDialog } from '../components/SettingsDialog'
@@ -49,11 +50,14 @@ export function BuildScreen({ user, onLogout, workingDirectory: initialWorkingDi
   const [recentDirectories, setRecentDirectories] = useState<string[]>([])
   const [previewFilePath, setPreviewFilePath] = useState<string | null>(null)
   const [pendingQuestions, setPendingQuestions] = useState<UserQuestion[]>([])
+  const projectId = selectedProject?.id
   const [activeFolders, setActiveFolders] = useState<string[]>(() => {
-    try { return JSON.parse(localStorage.getItem('activeFolders') || '[]') } catch { return [] }
+    if (!projectId) return []
+    try { return JSON.parse(localStorage.getItem(`activeFolders:${projectId}`) || '[]') } catch { return [] }
   })
   const [chosenFolders, setChosenFolders] = useState<string[]>(() => {
-    try { return JSON.parse(localStorage.getItem('chosenFolders') || '[]') } catch { return [] }
+    if (!projectId) return []
+    try { return JSON.parse(localStorage.getItem(`chosenFolders:${projectId}`) || '[]') } catch { return [] }
   })
 
   // Sync working directory prop with local state (only when parent sets a non-null value)
@@ -79,6 +83,9 @@ export function BuildScreen({ user, onLogout, workingDirectory: initialWorkingDi
   const [selectedFileIndex, setSelectedFileIndex] = useState(0)
   const fileSearchTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null)
 
+  const [projectFeatures, setProjectFeatures] = useState<ProjectFeature[]>([])
+  const [isFeaturesLoading, setIsFeaturesLoading] = useState(false)
+  const [featuresError, setFeaturesError] = useState<string | null>(null)
   const activeTurnIdRef = useRef<string | null>(null)
   const messagesEndRef = useRef<HTMLDivElement>(null)
   const inputRef = useRef<HTMLTextAreaElement>(null)
@@ -170,14 +177,25 @@ export function BuildScreen({ user, onLogout, workingDirectory: initialWorkingDi
     localStorage.setItem('selectedModel', selectedModel)
   }, [selectedModel])
 
-  // Persist folder selections to localStorage
+  // Persist folder selections to localStorage (scoped per project)
   useEffect(() => {
-    localStorage.setItem('activeFolders', JSON.stringify(activeFolders))
-  }, [activeFolders])
+    if (projectId) localStorage.setItem(`activeFolders:${projectId}`, JSON.stringify(activeFolders))
+  }, [activeFolders, projectId])
 
   useEffect(() => {
-    localStorage.setItem('chosenFolders', JSON.stringify(chosenFolders))
-  }, [chosenFolders])
+    if (projectId) localStorage.setItem(`chosenFolders:${projectId}`, JSON.stringify(chosenFolders))
+  }, [chosenFolders, projectId])
+
+  // Reset folder selections when project changes
+  useEffect(() => {
+    if (projectId) {
+      try { setActiveFolders(JSON.parse(localStorage.getItem(`activeFolders:${projectId}`) || '[]')) } catch { setActiveFolders([]) }
+      try { setChosenFolders(JSON.parse(localStorage.getItem(`chosenFolders:${projectId}`) || '[]')) } catch { setChosenFolders([]) }
+    } else {
+      setActiveFolders([])
+      setChosenFolders([])
+    }
+  }, [projectId])
 
   // Close action menu when clicking outside
   useEffect(() => {
@@ -226,17 +244,31 @@ export function BuildScreen({ user, onLogout, workingDirectory: initialWorkingDi
               setSdkSessionId(sessionData.sdkSessionId ?? null)
               setCurrentSessionTitle(sessionData.title)
 
-              // Check if there's an incomplete turn we should mark as streaming
+              // Check if there's an incomplete turn we should reconnect to
               const storedActiveTurnId = localStorage.getItem('activeTurnId')
               if (storedActiveTurnId) {
                 const incompleteTurn = sessionData.turns.find(
                   t => t.id === storedActiveTurnId && !t.isComplete
                 )
                 if (incompleteTurn) {
-                  console.log('[BuildScreen] Found incomplete turn after reload, resuming...')
-                  activeTurnIdRef.current = storedActiveTurnId
-                  isStreamingRef.current = true
-                  setIsStreaming(true)
+                  // Check if the agent service still has this session actively processing
+                  const agentSession = await window.api.getSessionInfo(sessionData.sessionId)
+                  if (agentSession?.isProcessing) {
+                    // Session is still running — reconnect to the event stream
+                    console.log('[BuildScreen] Session still processing, reconnecting to stream...')
+                    activeTurnIdRef.current = storedActiveTurnId
+                    isStreamingRef.current = true
+                    setIsStreaming(true)
+                  } else {
+                    // Session finished while we were away — mark the turn as complete
+                    console.log('[BuildScreen] Session finished while away, marking turn complete')
+                    setTurns(prev => prev.map(t =>
+                      t.id === storedActiveTurnId && !t.isComplete
+                        ? { ...t, textBlocks: [...t.textBlocks, '\n\n_Session completed in the background_'], isComplete: true, endTime: Date.now() }
+                        : t
+                    ))
+                    localStorage.removeItem('activeTurnId')
+                  }
                 }
               }
             }
@@ -439,6 +471,13 @@ export function BuildScreen({ user, onLogout, workingDirectory: initialWorkingDi
   // Listen for stream events
   useEffect(() => {
     const unsubscribe = window.api.onStreamEvent((event: StreamEvent) => {
+      // Filter out events from other sessions to prevent cross-project contamination.
+      // When switching projects, a previous session may still be streaming events —
+      // only process events that match our current session (or have no sessionId for backwards compat).
+      if (event.sessionId && sessionIdRef.current && event.sessionId !== sessionIdRef.current) {
+        return
+      }
+
       // Handle system events (compaction, checkpoints) regardless of active turn
       if (event.event === 'system') {
         const type = event.data.type as string
@@ -660,12 +699,22 @@ export function BuildScreen({ user, onLogout, workingDirectory: initialWorkingDi
   }, [processNextQueuedMessage])
 
   const switchToDirectory = (folder: string) => {
+    // Abort any running agent session to prevent cross-project event contamination
+    if (sessionIdRef.current && isStreamingRef.current) {
+      console.log('[BuildScreen] Aborting active session before switching directory:', sessionIdRef.current)
+      window.api.abortAgent(sessionIdRef.current)
+    }
     setWorkingDirectory(folder)
     setTurns([])
     setVisibleTurnCount(6)
     setSessionId(null)
     setSdkSessionId(null)
     setCurrentSessionTitle('')
+    // Clear streaming state so it doesn't leak into the new directory
+    activeTurnIdRef.current = null
+    isStreamingRef.current = false
+    setIsStreaming(false)
+    setPendingQuestions([])
     loadMemories(folder)
     loadSessions(folder)
     window.api.saveWorkingDirectory(folder)
@@ -681,6 +730,11 @@ export function BuildScreen({ user, onLogout, workingDirectory: initialWorkingDi
   }
 
   const handleBackToProjects = () => {
+    // Abort any running agent session to prevent cross-project event contamination
+    if (sessionIdRef.current && isStreamingRef.current) {
+      console.log('[BuildScreen] Aborting active session before navigating back:', sessionIdRef.current)
+      window.api.abortAgent(sessionIdRef.current)
+    }
     setWorkingDirectory(null)
     setTurns([])
     setVisibleTurnCount(6)
@@ -689,6 +743,11 @@ export function BuildScreen({ user, onLogout, workingDirectory: initialWorkingDi
     setMemories([])
     setMemoryExists(false)
     setSessions([])
+    // Clear streaming state
+    activeTurnIdRef.current = null
+    isStreamingRef.current = false
+    setIsStreaming(false)
+    setPendingQuestions([])
     localStorage.removeItem('activeTurnId')
 
     // Navigate back to ProjectsScreen via parent callback
@@ -743,6 +802,36 @@ export function BuildScreen({ user, onLogout, workingDirectory: initialWorkingDi
       setSkillsLastSync(null)
     }
   }
+
+  const loadFeatures = useCallback(async () => {
+    if (!selectedProject?.id || !activeWorkspaceProp?.id) {
+      setProjectFeatures([])
+      return
+    }
+
+    setIsFeaturesLoading(true)
+    setFeaturesError(null)
+
+    try {
+      const result = await window.api.fetchFeatures(activeWorkspaceProp.id, selectedProject.id)
+      if (result.success) {
+        setProjectFeatures(result.data)
+      } else {
+        setFeaturesError(result.error || 'Failed to load features')
+        setProjectFeatures([])
+      }
+    } catch (error) {
+      setFeaturesError(error instanceof Error ? error.message : 'Failed to load features')
+      setProjectFeatures([])
+    } finally {
+      setIsFeaturesLoading(false)
+    }
+  }, [selectedProject?.id, activeWorkspaceProp?.id])
+
+  // Load features when project or workspace changes
+  useEffect(() => {
+    loadFeatures()
+  }, [loadFeatures])
 
   const handleSyncSkills = async () => {
     setIsSyncingSkills(true)
@@ -922,7 +1011,20 @@ This file stores important context and information for the AI agent.
     }
   }, [])
 
-  const handleSend = useCallback(async (overrideInput?: string) => {
+  const handleQuestionCancel = useCallback(async (questionId: string) => {
+    // Remove the question from pending list
+    setPendingQuestions((prev) => prev.filter((q) => q.questionId !== questionId))
+
+    // Send a cancelled response so the pending promise resolves
+    const cancelResponse = JSON.stringify({ status: 'cancelled' })
+    try {
+      await window.api.respondToQuestion(questionId, cancelResponse)
+    } catch (err) {
+      console.error('[BuildScreen] Failed to cancel question:', err)
+    }
+  }, [])
+
+  const handleSend = useCallback(async (overrideInput?: string, displayMessage?: string) => {
     let effectiveInput = overrideInput ?? input
     if (!workingDirectory) return
     if (!effectiveInput.trim() && pastedImages.length === 0 && attachedFiles.length === 0) return
@@ -1246,7 +1348,7 @@ You MUST focus your work within these folders. When reading, writing, editing, o
     const turnId = crypto.randomUUID()
     const newTurn: Turn = {
       id: turnId,
-      userMessage: trimmedInput, // Show original user message in UI
+      userMessage: displayMessage || trimmedInput, // Show display message or original input in UI
       textBlocks: [],
       toolEvents: [],
       isComplete: false,
@@ -1459,6 +1561,33 @@ You MUST focus your work within these folders. When reading, writing, editing, o
       setSessionId(sessionData.sessionId)
       setSdkSessionId(sessionData.sdkSessionId ?? null)
       setCurrentSessionTitle(sessionData.title)
+
+      // Check if this session has an incomplete turn that's still running
+      const incompleteTurn = sessionData.turns.find(t => !t.isComplete)
+      if (incompleteTurn) {
+        const agentSession = await window.api.getSessionInfo(sessionData.sessionId)
+        if (agentSession?.isProcessing) {
+          // Session is still running — reconnect to the event stream
+          console.log('[BuildScreen] Loaded session still processing, reconnecting...')
+          activeTurnIdRef.current = incompleteTurn.id
+          isStreamingRef.current = true
+          setIsStreaming(true)
+          localStorage.setItem('activeTurnId', incompleteTurn.id)
+        } else {
+          // Session finished while we were away — mark the turn as complete
+          console.log('[BuildScreen] Loaded session finished in background, marking complete')
+          setTurns(prev => prev.map(t =>
+            t.id === incompleteTurn.id && !t.isComplete
+              ? { ...t, textBlocks: [...t.textBlocks, '\n\n_Session completed in the background_'], isComplete: true, endTime: Date.now() }
+              : t
+          ))
+        }
+      } else {
+        // All turns complete — ensure streaming state is cleared
+        activeTurnIdRef.current = null
+        isStreamingRef.current = false
+        setIsStreaming(false)
+      }
     }
   }
 
@@ -1829,7 +1958,14 @@ You MUST focus your work within these folders. When reading, writing, editing, o
       })
     }
 
-    // Clean up
+    // Cancel any pending questions so their promises resolve
+    setPendingQuestions((prev) => {
+      const cancelResponse = JSON.stringify({ status: 'cancelled' })
+      for (const q of prev) {
+        window.api.respondToQuestion(q.questionId, cancelResponse).catch(() => {})
+      }
+      return []
+    })
     isStreamingRef.current = false
     setIsStreaming(false)
     activeTurnIdRef.current = null
@@ -2050,14 +2186,354 @@ You MUST focus your work within these folders. When reading, writing, editing, o
     )
   }
 
+  // Category colour mapping (matches ConnText main app)
+  const getCategoryColor = (category: string | null): { border: string; bg: string; text: string; dot: string; icon: React.ReactNode } => {
+    const s = 13
+    switch (category) {
+      case 'essentials': return { border: 'border-cyan-500/30', bg: 'bg-cyan-500/6', text: 'text-cyan-400', dot: 'bg-cyan-400', icon: <Blocks size={s} className="text-cyan-400" /> }
+      case 'core': return { border: 'border-amber-500/30', bg: 'bg-amber-500/6', text: 'text-amber-400', dot: 'bg-amber-400', icon: <Lightbulb size={s} className="text-amber-400" /> }
+      case 'usability': return { border: 'border-blue-500/30', bg: 'bg-blue-500/6', text: 'text-blue-400', dot: 'bg-blue-400', icon: <Users size={s} className="text-blue-400" /> }
+      case 'engagement': return { border: 'border-rose-500/30', bg: 'bg-rose-500/6', text: 'text-rose-400', dot: 'bg-rose-400', icon: <Heart size={s} className="text-rose-400" /> }
+      case 'expansion': return { border: 'border-emerald-500/30', bg: 'bg-emerald-500/6', text: 'text-emerald-400', dot: 'bg-emerald-400', icon: <TrendingUp size={s} className="text-emerald-400" /> }
+      case 'monetisation': return { border: 'border-violet-500/30', bg: 'bg-violet-500/6', text: 'text-violet-400', dot: 'bg-violet-400', icon: <DollarSign size={s} className="text-violet-400" /> }
+      case 'technical': return { border: 'border-slate-400/30', bg: 'bg-slate-500/6', text: 'text-slate-400', dot: 'bg-slate-400', icon: <Cpu size={s} className="text-slate-400" /> }
+      case 'uiux': return { border: 'border-fuchsia-500/30', bg: 'bg-fuchsia-500/6', text: 'text-fuchsia-400', dot: 'bg-fuchsia-400', icon: <Palette size={s} className="text-fuchsia-400" /> }
+      case 'integration': return { border: 'border-teal-500/30', bg: 'bg-teal-500/6', text: 'text-teal-400', dot: 'bg-teal-400', icon: <Link2 size={s} className="text-teal-400" /> }
+      case 'refactor': return { border: 'border-orange-500/30', bg: 'bg-orange-500/6', text: 'text-orange-400', dot: 'bg-orange-400', icon: <RefreshCw size={s} className="text-orange-400" /> }
+      case 'system': return { border: 'border-gray-500/30', bg: 'bg-gray-500/6', text: 'text-gray-400', dot: 'bg-gray-400', icon: <Cog size={s} className="text-gray-400" /> }
+      default: return { border: 'border-brand-border/40', bg: 'bg-brand-card/40', text: 'text-brand-text-dim', dot: 'bg-brand-text-dim', icon: <Layers size={s} className="text-brand-text-dim" /> }
+    }
+  }
+
+  const getStatusBadge = (status: ProjectFeature['status']) => {
+    // Map API colour names to Tailwind border/text classes
+    const colorMap: Record<string, { border: string; text: string }> = {
+      green: { border: 'border-emerald-400/40', text: 'text-emerald-400' },
+      blue: { border: 'border-blue-400/40', text: 'text-blue-400' },
+      purple: { border: 'border-purple-400/40', text: 'text-purple-400' },
+      red: { border: 'border-red-400/40', text: 'text-red-400' },
+      amber: { border: 'border-amber-400/40', text: 'text-amber-400' },
+      slate: { border: 'border-slate-400/40', text: 'text-slate-400' },
+      neutral: { border: 'border-brand-text-dim/30', text: 'text-brand-text-dim' },
+    }
+    const s = colorMap[status.color] || colorMap.neutral
+    return (
+      <span className={`shrink-0 rounded-md border bg-transparent px-1.5 py-0.5 text-[9px] font-semibold uppercase tracking-wider ${s.border} ${s.text}`}>
+        {status.label}
+      </span>
+    )
+  }
+
+  const getPriorityBadge = (priority: ProjectFeature['priority']) => {
+    if (!priority || priority.value === 'none') return null
+    const styles: Record<string, { border: string; text: string }> = {
+      high: { border: 'border-red-400/40', text: 'text-red-400' },
+      medium: { border: 'border-amber-400/40', text: 'text-amber-400' },
+      low: { border: 'border-sky-400/40', text: 'text-sky-400' },
+    }
+    const s = styles[priority.value] || { border: 'border-brand-text-dim/30', text: 'text-brand-text-dim' }
+    return (
+      <span className={`shrink-0 rounded-md border bg-transparent px-1.5 py-0.5 text-[9px] font-semibold uppercase tracking-wider ${s.border} ${s.text}`}>
+        {priority.label}
+      </span>
+    )
+  }
+
+  // Group features: parents first, then children nested under them
+  const groupedFeatures = (() => {
+    const parents = projectFeatures.filter(f => !f.parent_feature_id)
+    const childMap = new Map<string, ProjectFeature[]>()
+    for (const f of projectFeatures) {
+      if (f.parent_feature_id) {
+        const children = childMap.get(f.parent_feature_id) || []
+        children.push(f)
+        childMap.set(f.parent_feature_id, children)
+      }
+    }
+    return { parents, childMap }
+  })()
+
+  // Status summary counts
+  const statusCounts = (() => {
+    const counts: Record<string, number> = {}
+    for (const f of projectFeatures) {
+      counts[f.status.value] = (counts[f.status.value] || 0) + 1
+    }
+    return counts
+  })()
+
   // Left pane content
   const leftPaneContent = (
-    <div className="flex h-full flex-col bg-brand-card/30">
-      <div className="border-b border-brand-border px-4 py-3">
-        <h3 className="text-sm font-semibold text-brand-text">Features</h3>
+    <div className="flex h-full flex-col" style={{ background: 'linear-gradient(180deg, rgba(20,20,22,0.95) 0%, rgba(10,10,11,0.98) 100%)' }}>
+      {/* Header */}
+      <div className="border-b border-brand-border/60 px-4 py-3">
+        <div className="flex items-center justify-between">
+          <div className="flex items-center gap-2">
+            <Layers size={14} className="text-brand-purple-soft" />
+            <h3 className="text-xs font-semibold tracking-wide uppercase text-brand-text-secondary">Features</h3>
+            {projectFeatures.length > 0 && (
+              <span className="rounded-full bg-brand-purple/15 px-1.5 py-0.5 text-[10px] font-medium tabular-nums text-brand-purple-soft">
+                {projectFeatures.length}
+              </span>
+            )}
+          </div>
+          <button
+            onClick={loadFeatures}
+            disabled={isFeaturesLoading}
+            className="cursor-pointer rounded-md p-1 text-brand-text-dim transition-all hover:bg-brand-card hover:text-brand-text-muted disabled:opacity-40"
+            title="Refresh features"
+          >
+            <RefreshCw size={13} className={isFeaturesLoading ? 'animate-spin' : ''} />
+          </button>
+        </div>
+
+        {/* Status summary bar */}
+        {projectFeatures.length > 0 && (
+          <div className="mt-2.5 flex gap-1 overflow-hidden rounded-full" style={{ height: '3px' }}>
+            {statusCounts['completed'] > 0 && (
+              <div
+                className="bg-emerald-400/80"
+                style={{ flex: statusCounts['completed'] }}
+                title={`${statusCounts['completed']} completed`}
+              />
+            )}
+            {statusCounts['in_progress'] > 0 && (
+              <div
+                className="bg-amber-400/80"
+                style={{ flex: statusCounts['in_progress'] }}
+                title={`${statusCounts['in_progress']} in progress`}
+              />
+            )}
+            {statusCounts['ready_for_development'] > 0 && (
+              <div
+                className="bg-sky-400/80"
+                style={{ flex: statusCounts['ready_for_development'] }}
+                title={`${statusCounts['ready_for_development']} ready`}
+              />
+            )}
+            {statusCounts['draft'] > 0 && (
+              <div
+                className="bg-brand-text-dim/40"
+                style={{ flex: statusCounts['draft'] }}
+                title={`${statusCounts['draft']} draft`}
+              />
+            )}
+            {statusCounts['rejected'] > 0 && (
+              <div
+                className="bg-red-400/60"
+                style={{ flex: statusCounts['rejected'] }}
+                title={`${statusCounts['rejected']} rejected`}
+              />
+            )}
+          </div>
+        )}
       </div>
-      <div className="flex-1 overflow-y-auto px-4 py-4">
+
+      {/* Feature list */}
+      <div className="flex-1 overflow-y-auto py-1.5">
+        {isFeaturesLoading && projectFeatures.length === 0 ? (
+          <div className="space-y-2 px-3 py-2">
+            {[...Array(5)].map((_, i) => (
+              <div key={i} className="animate-pulse rounded-lg bg-brand-card/60 p-3" style={{ animationDelay: `${i * 80}ms` }}>
+                <div className="mb-2 h-3 w-3/4 rounded bg-brand-border/40" />
+                <div className="h-2 w-1/2 rounded bg-brand-border/20" />
+              </div>
+            ))}
+          </div>
+        ) : featuresError ? (
+          <div className="px-4 py-6 text-center">
+            <AlertCircle size={20} className="mx-auto mb-2 text-red-400/60" />
+            <p className="text-xs text-red-400/80">{featuresError}</p>
+            <button
+              onClick={loadFeatures}
+              className="mt-2 cursor-pointer text-xs text-brand-purple-soft transition-colors hover:text-brand-purple"
+            >
+              Try again
+            </button>
+          </div>
+        ) : projectFeatures.length === 0 ? (
+          <div className="px-4 py-8 text-center">
+            <div className="mx-auto mb-3 flex h-10 w-10 items-center justify-center rounded-xl bg-brand-card/80 ring-1 ring-brand-border/30">
+              <Layers size={18} className="text-brand-text-dim" />
+            </div>
+            <p className="text-xs font-medium text-brand-text-muted">No features yet</p>
+            <p className="mt-0.5 text-[11px] text-brand-text-dim">
+              {selectedProject ? 'Add features in ConnText' : 'Select a project'}
+            </p>
+          </div>
+        ) : (
+          <div className="space-y-1 px-1.5">
+            {groupedFeatures.parents.map((feature) => {
+              const children = groupedFeatures.childMap.get(feature.id) || []
+              const cat = getCategoryColor(feature.brainstorm_category)
+              const categoryLabel = feature.brainstorm_category
+                ? feature.brainstorm_category.replace(/_/g, ' ').replace(/uiux/i, 'UI/UX').toUpperCase()
+                : null
+
+              return (
+                <div key={feature.id} className="rounded-lg border border-brand-border/30 bg-brand-card/30 transition-colors hover:bg-brand-card/50">
+                  <div className="px-3 py-2.5">
+                    {/* Top row: icon + title left, category right */}
+                    <div className="flex items-center gap-2">
+                      {/* Category icon */}
+                      <span className="shrink-0 leading-none">{cat.icon}</span>
+                      <div className="min-w-0 flex-1">
+                        <span className="text-xs font-medium text-brand-text">
+                          {feature.title}
+                        </span>
+                      </div>
+
+                      {/* Category name — capitalised, larger, with border */}
+                      {categoryLabel && (
+                        <span className={`shrink-0 rounded-md border px-1.5 py-0.5 text-[10px] font-bold tracking-wider ${cat.border} ${cat.text}`} style={{ opacity: 0.7 }}>
+                          {categoryLabel}
+                        </span>
+                      )}
+                    </div>
+
+                    {/* Status + priority badges row — below title */}
+                    <div className="mt-1.5 flex items-center gap-1.5 pl-[21px]">
+                      {getStatusBadge(feature.status)}
+                      {getPriorityBadge(feature.priority)}
+                      {feature.prd_summary_status === 'generated' && (
+                        <span className="text-[9px] font-medium text-emerald-400/50">PRD</span>
+                      )}
+                      {feature.spec_status === 'generated' && (
+                        <span className="text-[9px] font-medium text-sky-400/50">Spec</span>
+                      )}
+                    </div>
+
+                    {/* Description — always visible */}
+                    {feature.description && (
+                      <p className="mt-1.5 pl-4 text-[11px] leading-relaxed text-brand-text-muted line-clamp-2">
+                        {feature.description}
+                      </p>
+                    )}
+
+                    {/* Labels */}
+                    {feature.labels.length > 0 && (
+                      <div className="mt-1.5 flex flex-wrap gap-1 pl-4">
+                        {feature.labels.slice(0, 3).map((label) => (
+                          <span
+                            key={label.id}
+                            className="rounded bg-brand-border/20 px-1.5 py-0.5 text-[9px] font-medium text-brand-text-dim"
+                          >
+                            {label.name}
+                          </span>
+                        ))}
+                        {feature.labels.length > 3 && (
+                          <span className="text-[9px] text-brand-text-dim">+{feature.labels.length - 3}</span>
+                        )}
+                      </div>
+                    )}
+
+                    {/* Discuss & Build buttons */}
+                    <div className="mt-2 pl-[21px] flex gap-1.5">
+                      <button
+                        onClick={(e) => {
+                          e.stopPropagation()
+                          const prompt = `I'd like to discuss the feature: "${feature.title}"${feature.description ? `\n\nDescription:\n${feature.description}` : ''}${feature.content ? `\n\nFeature Content:\n${feature.content}` : ''}\n\nBased ONLY on the title, description, and content above, identify what's unclear or missing to fully scope this feature. Focus on:\n- Unclear requirements or ambiguous wording\n- Missing acceptance criteria\n- Undefined user flows or interactions\n- Technical decisions that need input\n\nDo NOT search the codebase, read files, or explore anything. Work solely from the information provided above.\n\nYou MUST use the mcp__customTools__ask_user tool to present your questions to me interactively. Group related questions together and provide options where appropriate. After I answer, summarise the refined feature scope.`
+                          const displayMsg = `💬 Discussing feature: **${feature.title}**`
+                          handleSend(prompt, displayMsg)
+                        }}
+                        className="inline-flex cursor-pointer items-center gap-1.5 rounded-md border border-brand-purple/30 bg-transparent px-2 py-1 text-[10px] font-medium text-brand-purple-soft transition-colors hover:border-brand-purple/50 hover:bg-brand-purple/10"
+                      >
+                        <MessageSquare size={11} />
+                        Discuss
+                      </button>
+                      <button
+                        onClick={(e) => {
+                          e.stopPropagation()
+                          const slug = feature.title.toLowerCase().replace(/[^a-z0-9]+/g, '-').replace(/^-|-$/g, '')
+                          const prdPath = `docs/features/${slug}-prd.md`
+                          const featureData = [
+                            `**Title:** ${feature.title}`,
+                            feature.description ? `**Description:** ${feature.description}` : '',
+                            feature.content ? `**Feature Content:**\n${feature.content}` : '',
+                            feature.prd_summary ? `**PRD Summary:**\n${feature.prd_summary}` : '',
+                            feature.spec ? `**Spec:**\n${feature.spec}` : '',
+                          ].filter(Boolean).join('\n\n')
+
+                          const prompt = `Build feature from PRD: "${feature.title}"
+
+Here is all the feature data from ConnText:
+
+${featureData}
+
+**INSTRUCTIONS — Follow these steps in order:**
+
+**Step 1: Create PRD document (if it doesn't exist)**
+Check if the file \`${prdPath}\` exists in the working directory.
+- If it does NOT exist:
+  1. Create the \`docs/features/\` directory structure if needed
+  2. Write a comprehensive, well-structured PRD markdown document at \`${prdPath}\`
+  3. The PRD MUST include an \`## Implementation Tasks\` section with checkbox items (\`- [ ]\`) covering all implementation work
+  4. Derive implementation tasks from all the feature data provided above
+  5. Include clear subtasks under each main task (indented with 2 spaces: \`  - [ ]\`)
+  6. Include a feature overview, user stories, and acceptance criteria sections before the implementation tasks
+- If it already exists, skip to Step 2
+
+**Step 2: Run Feature Build**
+Once the PRD file exists, run the skill:
+/conntext-feature-build ${prdPath}`
+
+                          const displayMsg = `🔨 Building feature: **${feature.title}**`
+                          handleSend(prompt, displayMsg)
+                        }}
+                        className="inline-flex cursor-pointer items-center gap-1.5 rounded-md border border-emerald-500/30 bg-transparent px-2 py-1 text-[10px] font-medium text-emerald-400 transition-colors hover:border-emerald-500/50 hover:bg-emerald-500/10"
+                      >
+                        <Hammer size={11} />
+                        Build
+                      </button>
+                    </div>
+                  </div>
+
+                  {/* Children / extensions */}
+                  {children.length > 0 && (
+                    <div className="border-t border-brand-border/20 px-3 py-1.5">
+                      <div className="space-y-0.5 pl-3 border-l border-brand-border/15">
+                        {children.map((child) => {
+                          const childCat = getCategoryColor(child.brainstorm_category)
+                          return (
+                            <div
+                              key={child.id}
+                              className="flex items-center gap-2 rounded-md px-2 py-1"
+                            >
+                              <span className="shrink-0">{childCat.icon}</span>
+                              <span className="min-w-0 flex-1 truncate text-[11px] text-brand-text-secondary">
+                                {child.title}
+                              </span>
+                              {getStatusBadge(child.status)}
+                            </div>
+                          )
+                        })}
+                      </div>
+                    </div>
+                  )}
+                </div>
+              )
+            })}
+          </div>
+        )}
       </div>
+
+      {/* Footer status legend */}
+      {projectFeatures.length > 0 && (
+        <div className="border-t border-brand-border/40 px-4 py-2">
+          <div className="flex flex-wrap gap-x-2 gap-y-1">
+            {Object.entries(statusCounts).map(([status, count]) => {
+              // Find a feature with this status to get the API colour
+              const sampleFeature = projectFeatures.find(f => f.status.value === status)
+              const statusObj = { value: status, label: `${count}`, color: sampleFeature?.status.color || 'neutral' }
+              return (
+                <span key={status} className="inline-flex items-center gap-1 text-[10px] text-brand-text-dim">
+                  {getStatusBadge(statusObj)}
+                </span>
+              )
+            })}
+          </div>
+        </div>
+      )}
     </div>
   )
 
@@ -2100,6 +2576,7 @@ You MUST focus your work within these folders. When reading, writing, editing, o
                     onFileClick={(path) => { console.log('[FileClick] path:', path); setPreviewFilePath(path) }}
                     pendingQuestions={turn.id === activeTurnIdRef.current ? pendingQuestions : []}
                     onQuestionSubmit={handleQuestionSubmit}
+                    onQuestionCancel={handleQuestionCancel}
                     onRewind={turn.checkpointId && !isStreaming ? handleRewind : undefined}
                     isRewinding={rewindingTurnId === turn.id}
                   />
@@ -2968,6 +3445,7 @@ function makeFilePathsClickable(nodeChildren: React.ReactNode, onFileClick: (pat
 function ClickableMarkdown({ children, onFileClick }: { children: string; onFileClick?: (path: string) => void }) {
   return (
     <ReactMarkdown
+      remarkPlugins={[remarkGfm]}
       components={{
         // Make inline code with file-like paths clickable
         code: ({ children: codeChildren, className }) => {
@@ -3030,7 +3508,7 @@ function ClickableMarkdown({ children, onFileClick }: { children: string; onFile
   )
 }
 
-const TurnBlock = memo(function TurnBlock({ turn, liveElapsed, onFileClick, pendingQuestions = [], onQuestionSubmit, onRewind, isRewinding }: { turn: Turn; liveElapsed: number | null; onFileClick?: (path: string) => void; pendingQuestions?: UserQuestion[]; onQuestionSubmit?: (questionId: string, response: string) => void; onRewind?: (turnId: string, checkpointId: string) => void; isRewinding?: boolean }) {
+const TurnBlock = memo(function TurnBlock({ turn, liveElapsed, onFileClick, pendingQuestions = [], onQuestionSubmit, onQuestionCancel, onRewind, isRewinding }: { turn: Turn; liveElapsed: number | null; onFileClick?: (path: string) => void; pendingQuestions?: UserQuestion[]; onQuestionSubmit?: (questionId: string, response: string) => void; onQuestionCancel?: (questionId: string) => void; onRewind?: (turnId: string, checkpointId: string) => void; isRewinding?: boolean }) {
   const [copiedId, setCopiedId] = useState<string | null>(null)
   const [showRewindConfirm, setShowRewindConfirm] = useState(false)
   const hasTools = turn.toolEvents.length > 0
@@ -3205,7 +3683,7 @@ const TurnBlock = memo(function TurnBlock({ turn, liveElapsed, onFileClick, pend
       {pendingQuestions.length > 0 && onQuestionSubmit && (
         <div className="space-y-2">
           {pendingQuestions.map((q) => (
-            <QuestionDialog key={q.questionId} question={q} onSubmit={onQuestionSubmit} />
+            <QuestionDialog key={q.questionId} question={q} onSubmit={onQuestionSubmit} onCancel={onQuestionCancel} />
           ))}
         </div>
       )}
