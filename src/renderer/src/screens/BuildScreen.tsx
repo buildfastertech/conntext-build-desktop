@@ -3752,26 +3752,20 @@ const TurnBlock = memo(function TurnBlock({ turn, liveElapsed, onFileClick, pend
         </div>
       )}
 
-      {/* Interleaved text blocks and tool groups */}
+      {/* Activity log — deliberation text, tool events, all grouped together */}
       {(() => {
         const toolGroups = groupToolEvents(turn.toolEvents)
-        const maxIdx = Math.max(turn.textBlocks.length, toolGroups.length + 1)
-        const elements: React.ReactNode[] = []
+        const hasTools = toolGroups.length > 0
 
-        for (let i = 0; i < maxIdx; i++) {
-          // Text block at this index
-          const text = turn.textBlocks[i]?.trim() || ''
-          if (text) {
-            // For incomplete turns, the last text block is still streaming — don't show as final bubble
-            const isLastBlock = i === turn.textBlocks.length - 1
-            const showAsStreaming = isLastBlock && isWorking
-
-            elements.push(
+        // No tools at all — show all text blocks as message bubbles
+        if (!hasTools) {
+          return turn.textBlocks.map((block, i) => {
+            const text = block.trim()
+            if (!text) return null
+            return (
               <div key={`text-${i}`} className="flex justify-start group">
-                <div className={`relative prose-response max-w-[85%] rounded-lg border border-brand-border bg-brand-card px-4 py-3 text-sm text-brand-text select-text ${showAsStreaming ? 'opacity-80' : ''}`}>
+                <div className="relative prose-response max-w-[85%] rounded-lg border border-brand-border bg-brand-card px-4 py-3 text-sm text-brand-text select-text">
                   <ClickableMarkdown onFileClick={onFileClick}>{text}</ClickableMarkdown>
-
-                  {/* Copy button */}
                   <button
                     onClick={() => handleCopy(text, `text-${i}-${turn.id}`)}
                     className="absolute -right-8 top-2 opacity-0 group-hover:opacity-100 transition-opacity p-1.5 rounded-lg hover:bg-brand-border/30"
@@ -3791,32 +3785,83 @@ const TurnBlock = memo(function TurnBlock({ turn, liveElapsed, onFileClick, pend
                 </div>
               </div>
             )
+          })
+        }
+
+        // Has tools — deliberation text goes in activity area, final text gets a bubble
+        const elements: React.ReactNode[] = []
+        const lastTextIdx = turn.textBlocks.length - 1
+
+        // Activity area: deliberation text + tool events interleaved
+        const activityItems: React.ReactNode[] = []
+        const maxIdx = Math.max(turn.textBlocks.length, toolGroups.length + 1)
+
+        for (let i = 0; i < maxIdx; i++) {
+          const text = turn.textBlocks[i]?.trim() || ''
+          const isLastBlock = i === lastTextIdx
+          const isFinalResponse = isLastBlock && turn.isComplete && !toolGroups[i]
+
+          // Deliberation text — shown inline in activity area (not the final response)
+          if (text && !isFinalResponse) {
+            activityItems.push(
+              <div key={`delib-${i}`} className="py-1 text-xs text-brand-text-muted select-text">
+                <ClickableMarkdown onFileClick={onFileClick}>{text}</ClickableMarkdown>
+              </div>
+            )
           }
 
-          // Tool group at this index (toolGroups[i] follows textBlocks[i])
+          // Tool groups at this index
           if (i < toolGroups.length) {
-            // Collect consecutive tool groups until the next text block
-            const groupStart = i
             let groupEnd = i
-            // If the next text block is empty, bundle consecutive tool groups together
             while (groupEnd + 1 < toolGroups.length && !(turn.textBlocks[groupEnd + 1]?.trim())) {
               groupEnd++
             }
-            const batchedGroups = toolGroups.slice(groupStart, groupEnd + 1)
-
-            elements.push(
-              <div key={`tools-${i}`} className="ml-2 border-l-2 border-brand-border-subtle pl-4">
-                <div className="max-h-[400px] space-y-0.5 overflow-y-auto py-1">
-                  {batchedGroups.map((group, j) => (
-                    <ToolEventLine key={j} group={group} onFileClick={onFileClick} />
-                  ))}
-                </div>
+            const batchedGroups = toolGroups.slice(i, groupEnd + 1)
+            activityItems.push(
+              <div key={`tools-${i}`} className="max-h-[400px] space-y-0.5 overflow-y-auto py-1">
+                {batchedGroups.map((group, j) => (
+                  <ToolEventLine key={j} group={group} onFileClick={onFileClick} />
+                ))}
               </div>
             )
-
-            // Skip ahead past any batched groups
             i = groupEnd
           }
+        }
+
+        if (activityItems.length > 0) {
+          elements.push(
+            <div key="activity" className="ml-2 border-l-2 border-brand-border-subtle pl-4">
+              {activityItems}
+            </div>
+          )
+        }
+
+        // Final response bubble — last text block after all tools, only when complete
+        const finalText = turn.textBlocks[lastTextIdx]?.trim() || ''
+        if (turn.isComplete && finalText && lastTextIdx > 0 && !toolGroups[lastTextIdx]) {
+          elements.push(
+            <div key="final" className="flex justify-start group">
+              <div className="relative prose-response max-w-[85%] rounded-lg border border-brand-border bg-brand-card px-4 py-3 text-sm text-brand-text select-text">
+                <ClickableMarkdown onFileClick={onFileClick}>{finalText}</ClickableMarkdown>
+                <button
+                  onClick={() => handleCopy(finalText, `final-${turn.id}`)}
+                  className="absolute -right-8 top-2 opacity-0 group-hover:opacity-100 transition-opacity p-1.5 rounded-lg hover:bg-brand-border/30"
+                  title="Copy message"
+                >
+                  {copiedId === `final-${turn.id}` ? (
+                    <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round" className="text-brand-purple">
+                      <polyline points="20 6 9 17 4 12"></polyline>
+                    </svg>
+                  ) : (
+                    <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round" className="text-brand-text-dim">
+                      <rect x="9" y="9" width="13" height="13" rx="2" ry="2"></rect>
+                      <path d="M5 15H4a2 2 0 0 1-2-2V4a2 2 0 0 1 2-2h9a2 2 0 0 1 2 2v1"></path>
+                    </svg>
+                  )}
+                </button>
+              </div>
+            </div>
+          )
         }
 
         return elements
