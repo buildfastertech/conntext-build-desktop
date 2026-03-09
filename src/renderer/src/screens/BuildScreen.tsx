@@ -3636,12 +3636,7 @@ function ClickableMarkdown({ children, onFileClick }: { children: string; onFile
 const TurnBlock = memo(function TurnBlock({ turn, liveElapsed, onFileClick, pendingQuestions = [], onQuestionSubmit, onQuestionCancel, onRewind, isRewinding }: { turn: Turn; liveElapsed: number | null; onFileClick?: (path: string) => void; pendingQuestions?: UserQuestion[]; onQuestionSubmit?: (questionId: string, response: string) => void; onQuestionCancel?: (questionId: string) => void; onRewind?: (turnId: string, checkpointId: string) => void; isRewinding?: boolean }) {
   const [copiedId, setCopiedId] = useState<string | null>(null)
   const [showRewindConfirm, setShowRewindConfirm] = useState(false)
-  const hasTools = turn.toolEvents.length > 0
   const isWorking = !turn.isComplete
-
-  // Separate first text block (initial response) from last text block (final response)
-  const firstText = turn.textBlocks[0]?.trim() || ''
-  const lastText = turn.textBlocks.length > 1 ? turn.textBlocks[turn.textBlocks.length - 1]?.trim() || '' : ''
 
   // Duration
   const duration = turn.endTime
@@ -3757,58 +3752,93 @@ const TurnBlock = memo(function TurnBlock({ turn, liveElapsed, onFileClick, pend
         </div>
       )}
 
-      {/* Initial response — text before any tools */}
-      {firstText && (
-        <div className="flex justify-start group">
-          <div className="relative prose-response max-w-[85%] rounded-lg border border-brand-border bg-brand-card px-4 py-3 text-sm text-brand-text select-text">
-            <ClickableMarkdown onFileClick={onFileClick}>{firstText}</ClickableMarkdown>
+      {/* Interleaved text blocks and tool groups */}
+      {(() => {
+        const toolGroups = groupToolEvents(turn.toolEvents)
+        const maxIdx = Math.max(turn.textBlocks.length, toolGroups.length + 1)
+        const elements: React.ReactNode[] = []
 
-            {/* Copy button */}
-            <button
-              onClick={() => handleCopy(firstText, `first-${turn.id}`)}
-              className="absolute -right-8 top-2 opacity-0 group-hover:opacity-100 transition-opacity p-1.5 rounded-lg hover:bg-brand-border/30"
-              title="Copy message"
-            >
-              {copiedId === `first-${turn.id}` ? (
-                <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round" className="text-brand-purple">
-                  <polyline points="20 6 9 17 4 12"></polyline>
-                </svg>
-              ) : (
-                <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round" className="text-brand-text-dim">
-                  <rect x="9" y="9" width="13" height="13" rx="2" ry="2"></rect>
-                  <path d="M5 15H4a2 2 0 0 1-2-2V4a2 2 0 0 1 2-2h9a2 2 0 0 1 2 2v1"></path>
-                </svg>
-              )}
-            </button>
-          </div>
-        </div>
-      )}
+        for (let i = 0; i < maxIdx; i++) {
+          // Text block at this index
+          const text = turn.textBlocks[i]?.trim() || ''
+          if (text) {
+            // For incomplete turns, the last text block is still streaming — don't show as final bubble
+            const isLastBlock = i === turn.textBlocks.length - 1
+            const showAsStreaming = isLastBlock && isWorking
 
-      {/* Thinking indicator */}
-      {turn.isThinking && turn.currentThinking && (
-        <ThinkingBlock text={turn.currentThinking} />
-      )}
+            elements.push(
+              <div key={`text-${i}`} className="flex justify-start group">
+                <div className={`relative prose-response max-w-[85%] rounded-lg border border-brand-border bg-brand-card px-4 py-3 text-sm text-brand-text select-text ${showAsStreaming ? 'opacity-80' : ''}`}>
+                  <ClickableMarkdown onFileClick={onFileClick}>{text}</ClickableMarkdown>
 
-      {/* Streaming partial text */}
-      {isWorking && turn.currentPartialText && (
-        <div className="flex justify-start">
-          <div className="prose-response max-w-[85%] rounded-lg border border-brand-border bg-brand-card px-4 py-3 text-sm text-brand-text select-text opacity-80">
-            <ClickableMarkdown onFileClick={onFileClick}>{turn.currentPartialText}</ClickableMarkdown>
-          </div>
-        </div>
-      )}
+                  {/* Copy button */}
+                  <button
+                    onClick={() => handleCopy(text, `text-${i}-${turn.id}`)}
+                    className="absolute -right-8 top-2 opacity-0 group-hover:opacity-100 transition-opacity p-1.5 rounded-lg hover:bg-brand-border/30"
+                    title="Copy message"
+                  >
+                    {copiedId === `text-${i}-${turn.id}` ? (
+                      <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round" className="text-brand-purple">
+                        <polyline points="20 6 9 17 4 12"></polyline>
+                      </svg>
+                    ) : (
+                      <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round" className="text-brand-text-dim">
+                        <rect x="9" y="9" width="13" height="13" rx="2" ry="2"></rect>
+                        <path d="M5 15H4a2 2 0 0 1-2-2V4a2 2 0 0 1 2-2h9a2 2 0 0 1 2 2v1"></path>
+                      </svg>
+                    )}
+                  </button>
+                </div>
+              </div>
+            )
+          }
 
-      {/* Activity log — all tool events grouped together */}
-      {(hasTools || isWorking) && (
+          // Tool group at this index (toolGroups[i] follows textBlocks[i])
+          if (i < toolGroups.length) {
+            // Collect consecutive tool groups until the next text block
+            const groupStart = i
+            let groupEnd = i
+            // If the next text block is empty, bundle consecutive tool groups together
+            while (groupEnd + 1 < toolGroups.length && !(turn.textBlocks[groupEnd + 1]?.trim())) {
+              groupEnd++
+            }
+            const batchedGroups = toolGroups.slice(groupStart, groupEnd + 1)
+
+            elements.push(
+              <div key={`tools-${i}`} className="ml-2 border-l-2 border-brand-border-subtle pl-4">
+                <div className="max-h-[400px] space-y-0.5 overflow-y-auto py-1">
+                  {batchedGroups.map((group, j) => (
+                    <ToolEventLine key={j} group={group} onFileClick={onFileClick} />
+                  ))}
+                </div>
+              </div>
+            )
+
+            // Skip ahead past any batched groups
+            i = groupEnd
+          }
+        }
+
+        return elements
+      })()}
+
+      {/* Thinking / streaming partial text / working indicator — all in the activity area */}
+      {isWorking && (turn.isThinking || turn.currentPartialText || pendingQuestions.length === 0) && (
         <div className="ml-2 border-l-2 border-brand-border-subtle pl-4">
-          {hasTools && (
-            <div className="max-h-[400px] space-y-0.5 overflow-y-auto py-1">
-              {groupToolEvents(turn.toolEvents).map((group, i) => (
-                <ToolEventLine key={i} group={group} onFileClick={onFileClick} />
-              ))}
+          {/* Thinking indicator */}
+          {turn.isThinking && turn.currentThinking && (
+            <ThinkingBlock text={turn.currentThinking} />
+          )}
+
+          {/* Streaming partial text (before it gets committed to a textBlock) */}
+          {turn.currentPartialText && (
+            <div className="py-1 text-xs text-brand-text-muted">
+              <ClickableMarkdown onFileClick={onFileClick}>{turn.currentPartialText}</ClickableMarkdown>
             </div>
           )}
-          {isWorking && pendingQuestions.length === 0 && (
+
+          {/* Working indicator */}
+          {pendingQuestions.length === 0 && (
             <div className="flex items-center gap-2 py-1 text-xs text-brand-text-muted">
               <span className="inline-block h-1.5 w-1.5 animate-pulse rounded-full bg-brand-purple" />
               Working...
@@ -3827,35 +3857,8 @@ const TurnBlock = memo(function TurnBlock({ turn, liveElapsed, onFileClick, pend
         </div>
       )}
 
-      {/* Final response — text after tools complete, only shown when turn is done */}
-      {turn.isComplete && lastText && (
-        <div className="flex justify-start group">
-          <div className="relative prose-response max-w-[85%] rounded-lg border border-brand-border bg-brand-card px-4 py-3 text-sm text-brand-text select-text">
-            <ClickableMarkdown onFileClick={onFileClick}>{lastText}</ClickableMarkdown>
-
-            {/* Copy button */}
-            <button
-              onClick={() => handleCopy(lastText, `last-${turn.id}`)}
-              className="absolute -right-8 top-2 opacity-0 group-hover:opacity-100 transition-opacity p-1.5 rounded-lg hover:bg-brand-border/30"
-              title="Copy message"
-            >
-              {copiedId === `last-${turn.id}` ? (
-                <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round" className="text-brand-purple">
-                  <polyline points="20 6 9 17 4 12"></polyline>
-                </svg>
-              ) : (
-                <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round" className="text-brand-text-dim">
-                  <rect x="9" y="9" width="13" height="13" rx="2" ry="2"></rect>
-                  <path d="M5 15H4a2 2 0 0 1-2-2V4a2 2 0 0 1 2-2h9a2 2 0 0 1 2 2v1"></path>
-                </svg>
-              )}
-            </button>
-          </div>
-        </div>
-      )}
-
       {/* Completed footer with duration and cost */}
-      {turn.isComplete && (hasTools || duration > 0) && (
+      {turn.isComplete && (turn.toolEvents.length > 0 || duration > 0) && (
         <div className="flex items-center gap-3 pl-2 text-[11px] text-brand-text-dim">
           <span className="flex items-center gap-1">
             <svg width="10" height="10" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
@@ -3877,7 +3880,7 @@ const ThinkingBlock = memo(function ThinkingBlock({ text }: { text: string }) {
   const [isExpanded, setIsExpanded] = useState(false)
 
   return (
-    <div className="ml-2 border-l-2 border-brand-purple/30 pl-4">
+    <div>
       <button
         onClick={() => setIsExpanded(!isExpanded)}
         className="flex items-center gap-1.5 py-1 text-xs text-brand-purple/70 hover:text-brand-purple transition-colors cursor-pointer"
