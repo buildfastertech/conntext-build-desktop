@@ -184,7 +184,7 @@ export function App() {
       <div className="flex h-screen flex-col bg-brand-bg">
         <TitleMenuBar />
         <div className="flex flex-1 items-center justify-center">
-          <RiveLoader size="sm" className="text-brand-purple" />
+          <RiveLoader size="2xl" className="text-brand-purple" />
         </div>
       </div>
     )

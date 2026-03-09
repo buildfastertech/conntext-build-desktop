@@ -1258,10 +1258,32 @@ This file stores important context and information for the AI agent.
           sessionTitle: currentSessionTitle || newTurn.userMessage.slice(0, 50),
           previousTurns: turns.filter(t => t.isComplete)
         }).then(result => {
+          // Safety net: commit any streaming text and mark complete.
+          // The 'done' stream event usually handles this, but the IPC Promise
+          // can resolve before the stream event arrives (race condition).
           setTurns((prev) =>
-            prev.map((t) =>
-              t.id === turnId ? { ...t, isComplete: true, endTime: t.endTime ?? Date.now() } : t
-            )
+            prev.map((t) => {
+              if (t.id !== turnId) return t
+              if (t.isComplete) return t // Already handled by 'done' event
+              const blocks = [...t.textBlocks]
+              if (t.currentPartialText) {
+                const toolGroupCount = t.toolEvents.filter(e => e.type === 'tool_result').length
+                while (blocks.length <= toolGroupCount) blocks.push('')
+                if (!blocks[toolGroupCount]) {
+                  blocks[toolGroupCount] = t.currentPartialText
+                }
+              }
+              return {
+                ...t,
+                textBlocks: blocks,
+                isComplete: true,
+                endTime: t.endTime ?? Date.now(),
+                currentPartialText: undefined,
+                currentThinking: undefined,
+                isThinking: false,
+                toolProgress: undefined
+              }
+            })
           )
         }).catch(() => {
           setTurns((prev) =>
@@ -1517,13 +1539,32 @@ You MUST focus your work within these folders. When reading, writing, editing, o
         previousTurns: turns.filter(t => t.isComplete)
       })
 
-      // SessionId is already set by the 'done' stream event, no need to set it again here
-      // This prevents duplicate state updates that could trigger multiple auto-saves
-
+      // Safety net: commit any streaming text and mark complete.
+      // The 'done' stream event usually handles this, but the IPC Promise
+      // can resolve before the stream event arrives (race condition).
       setTurns((prev) =>
-        prev.map((t) =>
-          t.id === turnId ? { ...t, isComplete: true, endTime: t.endTime ?? Date.now() } : t
-        )
+        prev.map((t) => {
+          if (t.id !== turnId) return t
+          if (t.isComplete) return t // Already handled by 'done' event
+          const blocks = [...t.textBlocks]
+          if (t.currentPartialText) {
+            const toolGroupCount = t.toolEvents.filter(e => e.type === 'tool_result').length
+            while (blocks.length <= toolGroupCount) blocks.push('')
+            if (!blocks[toolGroupCount]) {
+              blocks[toolGroupCount] = t.currentPartialText
+            }
+          }
+          return {
+            ...t,
+            textBlocks: blocks,
+            isComplete: true,
+            endTime: t.endTime ?? Date.now(),
+            currentPartialText: undefined,
+            currentThinking: undefined,
+            isThinking: false,
+            toolProgress: undefined
+          }
+        })
       )
     } catch {
       setTurns((prev) =>
@@ -3834,12 +3875,17 @@ const TurnBlock = memo(function TurnBlock({ turn, liveElapsed, onFileClick, pend
         const toolGroups = groupToolEvents(turn.toolEvents)
         const elements: React.ReactNode[] = []
 
-        // Find the last non-empty text block index — this will be the final response bubble
+        // Find the last non-empty text block index — this will be the final response bubble,
+        // but ONLY if it comes AFTER all tool groups. Text between tool calls is deliberation
+        // and should stay inline in the activity area, not be pulled to the bottom.
         let finalResponseIdx = -1
         if (turn.isComplete) {
           for (let j = turn.textBlocks.length - 1; j >= 0; j--) {
             if (turn.textBlocks[j]?.trim()) {
-              finalResponseIdx = j
+              // Only treat as final response if this text block is after all tool groups
+              if (j >= toolGroups.length) {
+                finalResponseIdx = j
+              }
               break
             }
           }

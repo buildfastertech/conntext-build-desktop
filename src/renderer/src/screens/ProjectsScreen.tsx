@@ -260,7 +260,7 @@ export function ProjectsScreen({ user, onSelectProject, onSelectFolder, onLogout
                 {isLoading && (
                     <div className="flex items-center justify-center py-20">
                         <div className="flex flex-col items-center gap-3">
-                            <RiveLoader size="md" />
+                            <RiveLoader size="2xl" />
                             <p className="text-sm text-brand-text-dim">Loading projects...</p>
                         </div>
                     </div>

@@ -25,6 +25,8 @@ const sizeClasses = {
   md: 'size-8',
   lg: 'size-12',
   xl: 'size-16',
+  '2xl': 'size-24',
+  '3xl': 'size-32',
   full: 'size-full',
 } as const
 
