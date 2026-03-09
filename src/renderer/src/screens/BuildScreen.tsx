@@ -3799,7 +3799,17 @@ const TurnBlock = memo(function TurnBlock({ turn, liveElapsed, onFileClick, pend
       {turn.toolEvents.length > 0 && (() => {
         const toolGroups = groupToolEvents(turn.toolEvents)
         const elements: React.ReactNode[] = []
-        const lastTextIdx = turn.textBlocks.length - 1
+
+        // Find the last non-empty text block index — this will be the final response bubble
+        let finalResponseIdx = -1
+        if (turn.isComplete) {
+          for (let j = turn.textBlocks.length - 1; j >= 0; j--) {
+            if (turn.textBlocks[j]?.trim()) {
+              finalResponseIdx = j
+              break
+            }
+          }
+        }
 
         // Activity area: deliberation text + tool events interleaved
         const activityItems: React.ReactNode[] = []
@@ -3807,11 +3817,9 @@ const TurnBlock = memo(function TurnBlock({ turn, liveElapsed, onFileClick, pend
 
         for (let i = 0; i < maxIdx; i++) {
           const text = turn.textBlocks[i]?.trim() || ''
-          const isLastBlock = i === lastTextIdx
-          const isFinalResponse = isLastBlock && turn.isComplete && !toolGroups[i]
 
-          // Deliberation text — shown inline in activity area (not the final response)
-          if (text && !isFinalResponse) {
+          // Deliberation text — shown inline in activity area (skip the final response)
+          if (text && i !== finalResponseIdx) {
             activityItems.push(
               <div key={`delib-${i}`} className="py-1 text-xs text-brand-text-muted select-text">
                 <ClickableMarkdown onFileClick={onFileClick}>{text}</ClickableMarkdown>
@@ -3845,9 +3853,9 @@ const TurnBlock = memo(function TurnBlock({ turn, liveElapsed, onFileClick, pend
           )
         }
 
-        // Final response bubble — last text block after all tools, only when complete
-        const finalText = turn.textBlocks[lastTextIdx]?.trim() || ''
-        if (turn.isComplete && finalText && lastTextIdx > 0 && !toolGroups[lastTextIdx]) {
+        // Final response bubble — find the last non-empty text block and show as bubble
+        const finalText = [...turn.textBlocks].reverse().find(b => b?.trim())?.trim() || ''
+        if (turn.isComplete && finalText) {
           elements.push(
             <div key="final" className="flex justify-start group">
               <div className="relative prose-response max-w-[85%] rounded-lg border border-brand-border bg-brand-card px-4 py-3 text-sm text-brand-text select-text">
