@@ -78,7 +78,7 @@ function findClaudeExecutable(customPath?: string | null): string {
 }
 
 export interface StreamEvent {
-  event: 'text' | 'tool_use' | 'tool_result' | 'done' | 'error' | 'system' | 'user_question'
+  event: 'text' | 'tool_use' | 'tool_result' | 'done' | 'error' | 'system' | 'user_question' | 'partial_text' | 'thinking' | 'tool_progress'
   data: Record<string, unknown>
   /** Session ID that emitted this event — used by the renderer to filter cross-project events */
   sessionId?: string
@@ -158,6 +158,8 @@ interface Session {
   activeTurn: ActiveTurn | null
   /** Session metadata for auto-saving (title, completed turns, etc.) */
   meta: SessionMeta | null
+  /** Tracks the current streaming content block type (for distinguishing thinking vs text block stops) */
+  _activeBlockType?: string | null
 }
 
 const DEFAULT_TOOLS = ['Read', 'Write', 'Edit', 'Glob', 'Grep', 'Bash', 'mcp__customTools__code_review', 'mcp__customTools__ask_user']
@@ -1160,11 +1162,22 @@ Please proceed to complete the user's request using the appropriate tools.`
         if (userMessage?.content && Array.isArray(userMessage.content)) {
           for (const block of userMessage.content) {
             if (typeof block === 'object' && 'type' in block && block.type === 'tool_result') {
+              // Extract text from tool_result content blocks
+              const rawContent = (block as Record<string, unknown>).content
+              let output = ''
+              if (typeof rawContent === 'string') {
+                output = rawContent
+              } else if (Array.isArray(rawContent)) {
+                output = rawContent
+                  .filter((c: any) => c?.type === 'text')
+                  .map((c: any) => c.text || '')
+                  .join('\n')
+              }
               onEvent({
                 event: 'tool_result',
                 data: {
                   toolUseId: (block as Record<string, unknown>).tool_use_id,
-                  content: (block as Record<string, unknown>).content
+                  output
                 }
               })
             }
@@ -1180,10 +1193,13 @@ Please proceed to complete the user's request using the appropriate tools.`
           if (streamEvent.type === 'content_block_start') {
             const block = streamEvent.content_block
             if (block?.type === 'thinking') {
+              session._activeBlockType = 'thinking'
               onEvent({
                 event: 'thinking',
                 data: { type: 'start', thinking: block.thinking ?? '' }
               })
+            } else {
+              session._activeBlockType = block?.type ?? null
             }
           } else if (streamEvent.type === 'content_block_delta') {
             const delta = streamEvent.delta
@@ -1199,11 +1215,14 @@ Please proceed to complete the user's request using the appropriate tools.`
               })
             }
           } else if (streamEvent.type === 'content_block_stop') {
-            // Thinking block finished
-            onEvent({
-              event: 'thinking',
-              data: { type: 'stop' }
-            })
+            // Only emit thinking:stop when a thinking block actually ended
+            if (session._activeBlockType === 'thinking') {
+              onEvent({
+                event: 'thinking',
+                data: { type: 'stop' }
+              })
+            }
+            session._activeBlockType = null
           }
         }
         break
