@@ -244,6 +244,15 @@ ipcMain.handle('app-state:save-session-id', (_event, sessionId: string) => {
   return { success: true }
 })
 
+ipcMain.handle('app-state:save-project-session-id', (_event, projectId: string, sessionId: string) => {
+  appStateStore.saveProjectSessionId(projectId, sessionId)
+  return { success: true }
+})
+
+ipcMain.handle('app-state:get-project-last-session-id', (_event, projectId: string) => {
+  return appStateStore.getProjectLastSessionId(projectId)
+})
+
 ipcMain.handle('app-state:clear', () => {
   appStateStore.clearAppState()
   return { success: true }
@@ -622,6 +631,8 @@ ipcMain.handle('agent:send-message', async (_event, params: {
   systemPrompt?: string
   allowedTools?: string[]
   model?: string
+  turnId?: string
+  sessionTitle?: string
 }) => {
   return agentService.sendMessage(params, (event) => {
     mainWindow?.webContents.send('agent:stream-event', event)
@@ -664,6 +675,18 @@ ipcMain.handle('agent:list-active-sessions', async () => {
   return sessions
 })
 
+// Get the current active turn state accumulated in the main process.
+// Used when the renderer switches back to a session to hydrate the UI.
+ipcMain.handle('agent:get-active-turn', async (_event, sessionId: string) => {
+  return agentService.getActiveTurnState(sessionId)
+})
+
+// Set session metadata so the main process can auto-save to disk.
+ipcMain.handle('agent:set-session-meta', async (_event, sessionId: string, meta: { title: string; timestamp: number; completedTurns: unknown[] }) => {
+  agentService.setSessionMeta(sessionId, meta as any)
+  return { success: true }
+})
+
 // User question responses (from ask_user MCP tool)
 ipcMain.handle('agent:respond-to-question', async (_event, questionId: string, response: string) => {
   console.log('[IPC] respond-to-question:', questionId, '| response length:', response.length)
@@ -677,8 +700,17 @@ ipcMain.handle('agent:respond-to-question', async (_event, questionId: string, r
 })
 
 // Session persistence
+// Helper to get the sessions directory — scoped by projectId when provided
+function getSessionsDir(workingDirectory: string, projectId?: string | null): string {
+  if (projectId) {
+    return join(workingDirectory, '.conntext', 'sessions', projectId)
+  }
+  return join(workingDirectory, '.conntext', 'sessions')
+}
+
 ipcMain.handle('session:save', async (_event, sessionData: {
   sessionId: string
+  projectId?: string | null
   title: string
   timestamp: number
   endTime: number | null
@@ -687,7 +719,7 @@ ipcMain.handle('session:save', async (_event, sessionData: {
   totalCost: number
 }) => {
   try {
-    const sessionsDir = join(sessionData.workingDirectory, '.conntext', 'sessions')
+    const sessionsDir = getSessionsDir(sessionData.workingDirectory, sessionData.projectId)
 
     // Create directory if it doesn't exist
     if (!existsSync(sessionsDir)) {
@@ -705,35 +737,47 @@ ipcMain.handle('session:save', async (_event, sessionData: {
   }
 })
 
-ipcMain.handle('session:load', async (_event, workingDirectory: string, sessionId: string) => {
+ipcMain.handle('session:load', async (_event, workingDirectory: string, sessionId: string, projectId?: string | null) => {
   try {
-    const sessionFile = join(workingDirectory, '.conntext', 'sessions', `${sessionId}.json`)
+    // Try project-scoped directory first
+    const sessionFile = join(getSessionsDir(workingDirectory, projectId), `${sessionId}.json`)
     const content = await readFile(sessionFile, 'utf-8')
     return JSON.parse(content)
-  } catch (error) {
-    console.error('Failed to load session:', error)
+  } catch {
+    // Fallback: try the root sessions directory (backwards compat for old sessions)
+    if (projectId) {
+      try {
+        const fallbackFile = join(getSessionsDir(workingDirectory), `${sessionId}.json`)
+        const content = await readFile(fallbackFile, 'utf-8')
+        return JSON.parse(content)
+      } catch {
+        return null
+      }
+    }
     return null
   }
 })
 
-ipcMain.handle('session:list', async (_event, workingDirectory: string) => {
+ipcMain.handle('session:list', async (_event, workingDirectory: string, projectId?: string | null) => {
   try {
-    const sessionsDir = join(workingDirectory, '.conntext', 'sessions')
+    const sessionsDir = getSessionsDir(workingDirectory, projectId)
 
     if (!existsSync(sessionsDir)) {
       return []
     }
 
-    const files = await readdir(sessionsDir)
+    const entries = await readdir(sessionsDir, { withFileTypes: true })
     const sessions = []
 
-    for (const file of files) {
-      if (file.endsWith('.json')) {
+    for (const entry of entries) {
+      // Only read .json files, skip subdirectories (which are project-scoped folders)
+      if (entry.isFile() && entry.name.endsWith('.json')) {
         try {
-          const content = await readFile(join(sessionsDir, file), 'utf-8')
+          const content = await readFile(join(sessionsDir, entry.name), 'utf-8')
           const session = JSON.parse(content)
           sessions.push({
             sessionId: session.sessionId,
+            projectId: session.projectId || null,
             title: session.title,
             timestamp: session.timestamp,
             endTime: session.endTime,
@@ -741,7 +785,7 @@ ipcMain.handle('session:list', async (_event, workingDirectory: string) => {
             totalCost: session.totalCost || 0
           })
         } catch (error) {
-          console.error(`Failed to read session file ${file}:`, error)
+          console.error(`Failed to read session file ${entry.name}:`, error)
         }
       }
     }
@@ -754,10 +798,10 @@ ipcMain.handle('session:list', async (_event, workingDirectory: string) => {
   }
 })
 
-ipcMain.handle('session:rename', async (_event, workingDirectory: string, sessionId: string, newTitle: string) => {
-  console.log('[Main] session:rename called', { workingDirectory, sessionId, newTitle })
+ipcMain.handle('session:rename', async (_event, workingDirectory: string, sessionId: string, newTitle: string, projectId?: string | null) => {
+  console.log('[Main] session:rename called', { workingDirectory, sessionId, newTitle, projectId })
   try {
-    const sessionFile = join(workingDirectory, '.conntext', 'sessions', `${sessionId}.json`)
+    const sessionFile = join(getSessionsDir(workingDirectory, projectId), `${sessionId}.json`)
     const content = await readFile(sessionFile, 'utf-8')
     const session = JSON.parse(content)
     session.title = newTitle
@@ -769,9 +813,9 @@ ipcMain.handle('session:rename', async (_event, workingDirectory: string, sessio
   }
 })
 
-ipcMain.handle('session:delete', async (_event, workingDirectory: string, sessionId: string) => {
+ipcMain.handle('session:delete', async (_event, workingDirectory: string, sessionId: string, projectId?: string | null) => {
   try {
-    const sessionFile = join(workingDirectory, '.conntext', 'sessions', `${sessionId}.json`)
+    const sessionFile = join(getSessionsDir(workingDirectory, projectId), `${sessionId}.json`)
     await unlink(sessionFile)
     return { success: true }
   } catch (error) {

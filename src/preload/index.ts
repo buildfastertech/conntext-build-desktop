@@ -21,6 +21,8 @@ const api = {
   getAppState: () => ipcRenderer.invoke('app-state:get'),
   saveWorkingDirectory: (directory: string) => ipcRenderer.invoke('app-state:save-working-directory', directory),
   saveSessionId: (sessionId: string) => ipcRenderer.invoke('app-state:save-session-id', sessionId),
+  saveProjectSessionId: (projectId: string, sessionId: string) => ipcRenderer.invoke('app-state:save-project-session-id', projectId, sessionId),
+  getProjectLastSessionId: (projectId: string) => ipcRenderer.invoke('app-state:get-project-last-session-id', projectId),
   clearAppState: () => ipcRenderer.invoke('app-state:clear'),
   saveClaudeCodePath: (path: string) => ipcRenderer.invoke('app-state:save-claude-code-path', path),
   getClaudeCodePath: () => ipcRenderer.invoke('app-state:get-claude-code-path'),
@@ -51,6 +53,8 @@ const api = {
     systemPrompt?: string
     allowedTools?: string[]
     model?: string
+    turnId?: string
+    sessionTitle?: string
   }) => ipcRenderer.invoke('agent:send-message', params),
 
   abortAgent: (sessionId: string) => ipcRenderer.invoke('agent:abort', sessionId),
@@ -73,17 +77,23 @@ const api = {
   listActiveSessions: () =>
     ipcRenderer.invoke('agent:list-active-sessions'),
 
+  getActiveTurnState: (sessionId: string) =>
+    ipcRenderer.invoke('agent:get-active-turn', sessionId),
+
+  setSessionMeta: (sessionId: string, meta: { title: string; timestamp: number; completedTurns: unknown[] }) =>
+    ipcRenderer.invoke('agent:set-session-meta', sessionId, meta),
+
   // Session persistence
   saveSession: (sessionData: unknown) =>
     ipcRenderer.invoke('session:save', sessionData),
-  loadSession: (workingDirectory: string, sessionId: string) =>
-    ipcRenderer.invoke('session:load', workingDirectory, sessionId),
-  listSessions: (workingDirectory: string) =>
-    ipcRenderer.invoke('session:list', workingDirectory),
-  deleteSession: (workingDirectory: string, sessionId: string) =>
-    ipcRenderer.invoke('session:delete', workingDirectory, sessionId),
-  renameSession: (workingDirectory: string, sessionId: string, newTitle: string) =>
-    ipcRenderer.invoke('session:rename', workingDirectory, sessionId, newTitle),
+  loadSession: (workingDirectory: string, sessionId: string, projectId?: string | null) =>
+    ipcRenderer.invoke('session:load', workingDirectory, sessionId, projectId),
+  listSessions: (workingDirectory: string, projectId?: string | null) =>
+    ipcRenderer.invoke('session:list', workingDirectory, projectId),
+  deleteSession: (workingDirectory: string, sessionId: string, projectId?: string | null) =>
+    ipcRenderer.invoke('session:delete', workingDirectory, sessionId, projectId),
+  renameSession: (workingDirectory: string, sessionId: string, newTitle: string, projectId?: string | null) =>
+    ipcRenderer.invoke('session:rename', workingDirectory, sessionId, newTitle, projectId),
 
   // Skills
   syncSkills: (apiUrl: string, apiToken: string) =>

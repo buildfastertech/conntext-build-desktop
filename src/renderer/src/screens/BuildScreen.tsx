@@ -97,6 +97,7 @@ export function BuildScreen({ user, onLogout, workingDirectory: initialWorkingDi
   const sessionIdRef = useRef<string | null>(null)
   const sdkSessionIdRef = useRef<string | null>(null)
   const workingDirectoryRef = useRef<string | null>(null)
+  const projectIdRef = useRef<string | null>(projectId ?? null)
   const currentSessionTitleRef = useRef<string>('')
 
   const scrollContainerRef = useRef<HTMLDivElement>(null)
@@ -166,6 +167,11 @@ export function BuildScreen({ user, onLogout, workingDirectory: initialWorkingDi
     workingDirectoryRef.current = workingDirectory
   }, [workingDirectory])
 
+  // Keep projectIdRef in sync with projectId
+  useEffect(() => {
+    projectIdRef.current = projectId ?? null
+  }, [projectId])
+
   // Keep currentSessionTitleRef in sync with currentSessionTitle state
   useEffect(() => {
     currentSessionTitleRef.current = currentSessionTitle
@@ -186,14 +192,50 @@ export function BuildScreen({ user, onLogout, workingDirectory: initialWorkingDi
     if (projectId) localStorage.setItem(`chosenFolders:${projectId}`, JSON.stringify(chosenFolders))
   }, [chosenFolders, projectId])
 
-  // Reset folder selections when project changes
+  // Reset session and folder state when project changes
+  // Clear old session immediately to prevent auto-save from writing stale data under the new projectId
+  const prevProjectIdRef = useRef<string | undefined>(projectId)
   useEffect(() => {
+    if (prevProjectIdRef.current === projectId) return
+    prevProjectIdRef.current = projectId
+
+    // Clear session state so old session doesn't leak into the new project
+    setTurns([])
+    setSessionId(null)
+    setSdkSessionId(null)
+    setCurrentSessionTitle('')
+    setSessions([])
+    setContextTokens(0)
+    activeTurnIdRef.current = null
+    sessionIdRef.current = null
+    sdkSessionIdRef.current = null
+    currentSessionTitleRef.current = ''
+    turnsRef.current = []
+    localStorage.removeItem('activeTurnId')
+
+    // Reset folder selections for the new project
     if (projectId) {
       try { setActiveFolders(JSON.parse(localStorage.getItem(`activeFolders:${projectId}`) || '[]')) } catch { setActiveFolders([]) }
       try { setChosenFolders(JSON.parse(localStorage.getItem(`chosenFolders:${projectId}`) || '[]')) } catch { setChosenFolders([]) }
     } else {
       setActiveFolders([])
       setChosenFolders([])
+    }
+
+    // Load sessions for the new project and auto-load the last session
+    if (workingDirectory && projectId) {
+      loadSessions(workingDirectory).then(async () => {
+        try {
+          const lastSessionId = await window.api.getProjectLastSessionId(projectId)
+          if (lastSessionId) {
+            handleLoadSession(lastSessionId)
+          }
+        } catch (err) {
+          console.warn('[BuildScreen] Failed to auto-load last project session:', err)
+        }
+      })
+    } else if (workingDirectory) {
+      loadSessions(workingDirectory)
     }
   }, [projectId])
 
@@ -232,13 +274,21 @@ export function BuildScreen({ user, onLogout, workingDirectory: initialWorkingDi
         const appState = await window.api.getAppState()
         setRecentDirectories(appState.recentDirectories || [])
         if (appState.lastWorkingDirectory) {
+          // Determine the session to restore: prefer per-project session, fall back to global
+          const currentProjectId = projectIdRef.current
+          let sessionToRestore = appState.lastSessionId
+          if (currentProjectId && appState.projectLastSessionIds?.[currentProjectId]) {
+            sessionToRestore = appState.projectLastSessionIds[currentProjectId]
+          }
           // If there's a last session, try to load it
-          if (appState.lastSessionId) {
+          if (sessionToRestore) {
             const sessionData = await window.api.loadSession(
               appState.lastWorkingDirectory,
-              appState.lastSessionId
+              sessionToRestore,
+              currentProjectId
             )
-            if (sessionData) {
+            // Only restore if the session belongs to the current project (or neither has a projectId)
+            if (sessionData && (sessionData.projectId === (projectIdRef.current ?? null) || (!sessionData.projectId && !projectIdRef.current))) {
               setTurns(sessionData.turns)
               setSessionId(sessionData.sessionId)
               setSdkSessionId(sessionData.sdkSessionId ?? null)
@@ -306,10 +356,13 @@ export function BuildScreen({ user, onLogout, workingDirectory: initialWorkingDi
     }
   }, [workingDirectory])
 
-  // Save session ID whenever it changes
+  // Save session ID whenever it changes (global + per-project)
   useEffect(() => {
     if (sessionId) {
       window.api.saveSessionId(sessionId)
+      if (projectIdRef.current) {
+        window.api.saveProjectSessionId(projectIdRef.current, sessionId)
+      }
     }
   }, [sessionId])
 
@@ -419,6 +472,7 @@ export function BuildScreen({ user, onLogout, workingDirectory: initialWorkingDi
       if (workingDirectoryRef.current && sessionIdRef.current) {
         const sessionData = {
           sessionId: sessionIdRef.current,
+          projectId: projectIdRef.current,
           title: currentSessionTitleRef.current || updatedTurns[0]?.userMessage?.slice(0, 50) || 'Untitled Session',
           timestamp: updatedTurns[0]?.startTime || Date.now(),
           endTime: Date.now(),
@@ -443,6 +497,8 @@ export function BuildScreen({ user, onLogout, workingDirectory: initialWorkingDi
       sessionId: sessionIdRef.current ?? undefined,
       sdkSessionId: sdkSessionIdRef.current ?? undefined,
       model: selectedModelRef.current,
+      turnId: newTurn.id,
+      sessionTitle: currentSessionTitleRef.current || newTurn.userMessage.slice(0, 50),
       previousTurns: turnsRef.current.filter(t => t.isComplete)
     }).catch(() => {
       setTurns((prev) =>
@@ -475,6 +531,11 @@ export function BuildScreen({ user, onLogout, workingDirectory: initialWorkingDi
       // When switching projects, a previous session may still be streaming events —
       // only process events that match our current session (or have no sessionId for backwards compat).
       if (event.sessionId && sessionIdRef.current && event.sessionId !== sessionIdRef.current) {
+        // Background session completed — refresh the sessions list so sidebar updates
+        if ((event.event === 'done' || event.event === 'error') && workingDirectoryRef.current) {
+          console.log('[BuildScreen] Background session completed, refreshing sessions list:', event.sessionId)
+          loadSessions(workingDirectoryRef.current)
+        }
         return
       }
 
@@ -699,10 +760,11 @@ export function BuildScreen({ user, onLogout, workingDirectory: initialWorkingDi
   }, [processNextQueuedMessage])
 
   const switchToDirectory = (folder: string) => {
-    // Abort any running agent session to prevent cross-project event contamination
+    // Don't abort running sessions — let them continue in the background.
+    // Stream events are filtered by sessionId (line ~479) so they won't contaminate.
+    // When the user switches back, handleLoadSession will reconnect to the live session.
     if (sessionIdRef.current && isStreamingRef.current) {
-      console.log('[BuildScreen] Aborting active session before switching directory:', sessionIdRef.current)
-      window.api.abortAgent(sessionIdRef.current)
+      console.log('[BuildScreen] Detaching from active session (continues in background):', sessionIdRef.current)
     }
     setWorkingDirectory(folder)
     setTurns([])
@@ -730,10 +792,10 @@ export function BuildScreen({ user, onLogout, workingDirectory: initialWorkingDi
   }
 
   const handleBackToProjects = () => {
-    // Abort any running agent session to prevent cross-project event contamination
+    // Don't abort running sessions — let them continue in the background.
+    // When the user returns to this project, handleLoadSession will reconnect.
     if (sessionIdRef.current && isStreamingRef.current) {
-      console.log('[BuildScreen] Aborting active session before navigating back:', sessionIdRef.current)
-      window.api.abortAgent(sessionIdRef.current)
+      console.log('[BuildScreen] Detaching from active session (continues in background):', sessionIdRef.current)
     }
     setWorkingDirectory(null)
     setTurns([])
@@ -781,7 +843,7 @@ export function BuildScreen({ user, onLogout, workingDirectory: initialWorkingDi
 
   const loadSessions = async (directory: string) => {
     try {
-      const sessionList = await window.api.listSessions(directory)
+      const sessionList = await window.api.listSessions(directory, projectIdRef.current)
       setSessions(sessionList)
     } catch (error) {
       console.error('Failed to load sessions:', error)
@@ -1134,6 +1196,7 @@ This file stores important context and information for the AI agent.
         if (workingDirectory && sessionId) {
           const sessionData = {
             sessionId,
+            projectId: projectId ?? null,
             title: currentSessionTitle || turns[0]?.userMessage?.slice(0, 50) || newTurn.userMessage.slice(0, 50) || 'Untitled Session',
             timestamp: turns[0]?.startTime || Date.now(),
             endTime: Date.now(),
@@ -1154,6 +1217,8 @@ This file stores important context and information for the AI agent.
           sessionId: sessionId ?? undefined,
           sdkSessionId: sdkSessionId ?? undefined,
           model: selectedModel,
+          turnId: newTurn.id,
+          sessionTitle: currentSessionTitle || newTurn.userMessage.slice(0, 50),
           previousTurns: turns.filter(t => t.isComplete)
         }).then(result => {
           setTurns((prev) =>
@@ -1234,6 +1299,7 @@ This file stores important context and information for the AI agent.
         if (workingDirectory && sessionId) {
           const sessionData = {
             sessionId,
+            projectId: projectId ?? null,
             title: currentSessionTitle || turns[0]?.userMessage?.slice(0, 50) || newTurn.userMessage.slice(0, 50) || 'Untitled Session',
             timestamp: turns[0]?.startTime || Date.now(),
             endTime: Date.now(),
@@ -1254,6 +1320,8 @@ This file stores important context and information for the AI agent.
           sessionId: sessionId ?? undefined,
           sdkSessionId: sdkSessionId ?? undefined,
           model: selectedModel,
+          turnId: newTurn.id,
+          sessionTitle: currentSessionTitle || newTurn.userMessage.slice(0, 50),
           previousTurns: turns.filter(t => t.isComplete)
         }).catch(() => {
           setTurns((prev) =>
@@ -1378,6 +1446,7 @@ You MUST focus your work within these folders. When reading, writing, editing, o
     if (workingDirectory) {
       const sessionData = {
         sessionId: currentSessionId,
+        projectId: projectId ?? null,
         title: currentSessionTitle || turns[0]?.userMessage?.slice(0, 50) || newTurn.userMessage.slice(0, 50) || 'Untitled Session',
         timestamp: turns[0]?.startTime || Date.now(),
         endTime: Date.now(),
@@ -1398,6 +1467,8 @@ You MUST focus your work within these folders. When reading, writing, editing, o
         sessionId: currentSessionId,
         sdkSessionId: sdkSessionId ?? undefined,
         model: selectedModel,
+        turnId: newTurn.id,
+        sessionTitle: currentSessionTitle || turns[0]?.userMessage?.slice(0, 50) || newTurn.userMessage.slice(0, 50),
         previousTurns: turns.filter(t => t.isComplete)
       })
 
@@ -1538,6 +1609,7 @@ You MUST focus your work within these folders. When reading, writing, editing, o
     const sessionData = {
       sessionId,
       sdkSessionId,
+      projectId: projectId ?? null,
       title: sessionTitle,
       timestamp: turns[0]?.startTime || Date.now(),
       endTime: Date.now(),
@@ -1555,7 +1627,49 @@ You MUST focus your work within these folders. When reading, writing, editing, o
   const handleLoadSession = async (loadSessionId: string) => {
     if (!workingDirectory) return
 
-    const sessionData = await window.api.loadSession(workingDirectory, loadSessionId)
+    // First, try to get the live turn state from the main process.
+    // This has the most up-to-date data if the session was running in the background.
+    let liveState: Awaited<ReturnType<typeof window.api.getActiveTurnState>> = null
+    let agentSession: Awaited<ReturnType<typeof window.api.getSessionInfo>> = null
+    try {
+      liveState = await window.api.getActiveTurnState(loadSessionId)
+      agentSession = await window.api.getSessionInfo(loadSessionId)
+    } catch (err) {
+      console.warn('[BuildScreen] Failed to get live session state, falling back to disk:', err)
+    }
+
+    if (liveState?.meta && agentSession) {
+      // Session is alive in the main process — hydrate from its live state
+      console.log('[BuildScreen] Hydrating from main process live state for session:', loadSessionId)
+
+      const allTurns = [...liveState.meta.completedTurns]
+      if (liveState.activeTurn) {
+        allTurns.push(liveState.activeTurn)
+      }
+
+      setTurns(allTurns)
+      setSessionId(loadSessionId)
+      setSdkSessionId(agentSession.sdkSessionId ?? null)
+      setCurrentSessionTitle(liveState.meta.title)
+
+      if (agentSession.isProcessing && liveState.activeTurn) {
+        // Session is still running — reconnect to the event stream
+        console.log('[BuildScreen] Session still processing, reconnecting to stream...')
+        activeTurnIdRef.current = liveState.activeTurn.id
+        isStreamingRef.current = true
+        setIsStreaming(true)
+        localStorage.setItem('activeTurnId', liveState.activeTurn.id)
+      } else {
+        // Session is alive but not processing — all turns are complete
+        activeTurnIdRef.current = null
+        isStreamingRef.current = false
+        setIsStreaming(false)
+      }
+      return
+    }
+
+    // Fall back to loading from disk if session is not alive in main process
+    const sessionData = await window.api.loadSession(workingDirectory, loadSessionId, projectId)
     if (sessionData) {
       setTurns(sessionData.turns)
       setSessionId(sessionData.sessionId)
@@ -1563,11 +1677,13 @@ You MUST focus your work within these folders. When reading, writing, editing, o
       setCurrentSessionTitle(sessionData.title)
 
       // Check if this session has an incomplete turn that's still running
-      const incompleteTurn = sessionData.turns.find(t => !t.isComplete)
+      const incompleteTurn = sessionData.turns.find((t: Turn) => !t.isComplete)
       if (incompleteTurn) {
-        const agentSession = await window.api.getSessionInfo(sessionData.sessionId)
-        if (agentSession?.isProcessing) {
-          // Session is still running — reconnect to the event stream
+        // Session finished while we were away — the disk file was auto-saved
+        // by the main process. Check if the agent is still alive.
+        const agentInfo = await window.api.getSessionInfo(sessionData.sessionId)
+        if (agentInfo?.isProcessing) {
+          // Still running — reconnect
           console.log('[BuildScreen] Loaded session still processing, reconnecting...')
           activeTurnIdRef.current = incompleteTurn.id
           isStreamingRef.current = true
@@ -1594,13 +1710,17 @@ You MUST focus your work within these folders. When reading, writing, editing, o
   const handleDeleteSession = async (deleteSessionId: string) => {
     if (!workingDirectory) return
 
-    const result = await window.api.deleteSession(workingDirectory, deleteSessionId)
+    const result = await window.api.deleteSession(workingDirectory, deleteSessionId, projectId)
     if (result.success) {
       loadSessions(workingDirectory)
     }
   }
 
   const handleNewSession = () => {
+    // Don't abort the old session — let it continue in the background
+    if (sessionIdRef.current && isStreamingRef.current) {
+      console.log('[BuildScreen] Detaching from active session (continues in background):', sessionIdRef.current)
+    }
     setTurns([])
     setVisibleTurnCount(6)
     setSessionId(null)
@@ -1608,6 +1728,11 @@ You MUST focus your work within these folders. When reading, writing, editing, o
     setCurrentSessionTitle('')
     setPastedImages([])
     setInput('')
+    // Clear streaming state so it doesn't leak into the new session
+    activeTurnIdRef.current = null
+    isStreamingRef.current = false
+    setIsStreaming(false)
+    setPendingQuestions([])
     localStorage.removeItem('activeTurnId')
     console.log('[BuildScreen] Started new session')
   }
@@ -1616,7 +1741,7 @@ You MUST focus your work within these folders. When reading, writing, editing, o
     if (!workingDirectory) return
     console.log('[BuildScreen] Renaming session', targetSessionId, 'to', newTitle, 'in', workingDirectory)
     try {
-      const result = await window.api.renameSession(workingDirectory, targetSessionId, newTitle)
+      const result = await window.api.renameSession(workingDirectory, targetSessionId, newTitle, projectId)
       console.log('[BuildScreen] Rename result:', result)
       if (result.success) {
         // Update local sessions list
@@ -3659,6 +3784,20 @@ const TurnBlock = memo(function TurnBlock({ turn, liveElapsed, onFileClick, pend
         </div>
       )}
 
+      {/* Thinking indicator */}
+      {turn.isThinking && turn.currentThinking && (
+        <ThinkingBlock text={turn.currentThinking} />
+      )}
+
+      {/* Streaming partial text */}
+      {isWorking && turn.currentPartialText && (
+        <div className="flex justify-start">
+          <div className="prose-response max-w-[85%] rounded-lg border border-brand-border bg-brand-card px-4 py-3 text-sm text-brand-text select-text opacity-80">
+            <ClickableMarkdown onFileClick={onFileClick}>{turn.currentPartialText}</ClickableMarkdown>
+          </div>
+        </div>
+      )}
+
       {/* Activity log — all tool events grouped together */}
       {(hasTools || isWorking) && (
         <div className="ml-2 border-l-2 border-brand-border-subtle pl-4">
@@ -3734,30 +3873,92 @@ const TurnBlock = memo(function TurnBlock({ turn, liveElapsed, onFileClick, pend
   )
 })
 
+const ThinkingBlock = memo(function ThinkingBlock({ text }: { text: string }) {
+  const [isExpanded, setIsExpanded] = useState(false)
+
+  return (
+    <div className="ml-2 border-l-2 border-brand-purple/30 pl-4">
+      <button
+        onClick={() => setIsExpanded(!isExpanded)}
+        className="flex items-center gap-1.5 py-1 text-xs text-brand-purple/70 hover:text-brand-purple transition-colors cursor-pointer"
+      >
+        <span className="inline-block h-1.5 w-1.5 animate-pulse rounded-full bg-brand-purple/50" />
+        <svg
+          width="10" height="10" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round"
+          className={`transition-transform ${isExpanded ? 'rotate-90' : ''}`}
+        >
+          <polyline points="9 18 15 12 9 6" />
+        </svg>
+        Thinking...
+      </button>
+      {isExpanded && (
+        <div className="mt-1 mb-2 rounded-lg border border-brand-purple/20 bg-brand-purple/5 px-3 py-2 text-xs text-brand-text-dim whitespace-pre-wrap max-h-[300px] overflow-y-auto">
+          {text}
+        </div>
+      )}
+    </div>
+  )
+})
+
 const ToolEventLine = memo(function ToolEventLine({ group, onFileClick }: { group: ToolEventGroup; onFileClick?: (path: string) => void }) {
+  const [isExpanded, setIsExpanded] = useState(false)
   const { toolUse, toolResult } = group
   const detail = getToolDetail(toolUse.tool, toolUse.input)
   const isFilePath = detail && ['Read', 'Write', 'Edit'].includes(toolUse.tool ?? '')
+  const hasExpandableContent = toolUse.input || toolResult?.output
 
   return (
-    <div className="flex items-start gap-1.5 py-0.5 text-xs">
-      {toolResult ? (
-        <span className="text-brand-success">✓</span>
-      ) : (
-        <span className="text-brand-purple">⚡</span>
+    <div className="py-0.5">
+      <div className="flex items-start gap-1.5 text-xs">
+        {toolResult ? (
+          <span className="text-brand-success">✓</span>
+        ) : (
+          <span className="text-brand-purple">⚡</span>
+        )}
+        {hasExpandableContent ? (
+          <button
+            onClick={() => setIsExpanded(!isExpanded)}
+            className="flex items-center gap-1 cursor-pointer hover:text-brand-text transition-colors"
+          >
+            <svg
+              width="8" height="8" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.5" strokeLinecap="round" strokeLinejoin="round"
+              className={`text-brand-text-dim transition-transform ${isExpanded ? 'rotate-90' : ''}`}
+            >
+              <polyline points="9 18 15 12 9 6" />
+            </svg>
+            <span className="font-mono text-brand-text-muted">{toolUse.tool}</span>
+          </button>
+        ) : (
+          <span className="font-mono text-brand-text-muted">{toolUse.tool}</span>
+        )}
+        {detail && isFilePath && onFileClick ? (
+          <span
+            className="flex-1 break-all font-mono text-brand-purple-soft cursor-pointer transition-colors hover:text-brand-purple"
+            onClick={() => onFileClick(detail)}
+            title="Click to preview file"
+          >
+            {detail}
+          </span>
+        ) : detail ? (
+          <span className="flex-1 break-all font-mono text-brand-text-dim">{detail}</span>
+        ) : null}
+      </div>
+      {isExpanded && (
+        <div className="ml-5 mt-1 space-y-1">
+          {toolUse.input && (
+            <div className="rounded border border-brand-border bg-brand-bg/50 px-2 py-1.5 text-[11px] font-mono text-brand-text-dim max-h-[200px] overflow-y-auto whitespace-pre-wrap">
+              {formatToolInput(toolUse.tool, toolUse.input)}
+            </div>
+          )}
+          {toolResult?.output && (
+            <div className="rounded border border-brand-success/20 bg-brand-success/5 px-2 py-1.5 text-[11px] font-mono text-brand-text-dim max-h-[200px] overflow-y-auto whitespace-pre-wrap">
+              {typeof toolResult.output === 'string' && toolResult.output.length > 500
+                ? toolResult.output.slice(0, 500) + '...'
+                : toolResult.output}
+            </div>
+          )}
+        </div>
       )}
-      <span className="font-mono text-brand-text-muted">{toolUse.tool}</span>
-      {detail && isFilePath && onFileClick ? (
-        <span
-          className="flex-1 break-all font-mono text-brand-purple-soft cursor-pointer transition-colors hover:text-brand-purple"
-          onClick={() => onFileClick(detail)}
-          title="Click to preview file"
-        >
-          {detail}
-        </span>
-      ) : detail ? (
-        <span className="flex-1 break-all font-mono text-brand-text-dim">{detail}</span>
-      ) : null}
     </div>
   )
 })
@@ -3789,5 +3990,38 @@ function getToolDetail(tool?: string, input?: Record<string, unknown>): string |
     }
     default:
       return null
+  }
+}
+
+function formatToolInput(tool?: string, input?: Record<string, unknown>): string {
+  if (!tool || !input) return ''
+
+  switch (tool) {
+    case 'Edit':
+      return [
+        input.file_path && `File: ${input.file_path}`,
+        input.old_string && `- ${(input.old_string as string).slice(0, 200)}`,
+        input.new_string && `+ ${(input.new_string as string).slice(0, 200)}`
+      ].filter(Boolean).join('\n')
+    case 'Write':
+      return [
+        input.file_path && `File: ${input.file_path}`,
+        input.content && `Content: ${(input.content as string).slice(0, 300)}${(input.content as string).length > 300 ? '...' : ''}`
+      ].filter(Boolean).join('\n')
+    case 'Bash':
+      return (input.command as string) || ''
+    case 'Grep':
+      return [
+        input.pattern && `Pattern: ${input.pattern}`,
+        input.path && `Path: ${input.path}`,
+        input.glob && `Glob: ${input.glob}`
+      ].filter(Boolean).join('\n')
+    case 'Glob':
+      return [
+        input.pattern && `Pattern: ${input.pattern}`,
+        input.path && `Path: ${input.path}`
+      ].filter(Boolean).join('\n')
+    default:
+      return JSON.stringify(input, null, 2).slice(0, 500)
   }
 }

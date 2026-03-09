@@ -2,6 +2,9 @@ import { query } from '@anthropic-ai/claude-agent-sdk'
 import type { SDKMessage, SDKUserMessage, Options, HookJSONOutput, Query, RewindFilesResult } from '@anthropic-ai/claude-agent-sdk'
 import { randomUUID } from 'crypto'
 import { execSync } from 'child_process'
+import { writeFile, mkdir } from 'fs/promises'
+import { existsSync } from 'fs'
+import { join } from 'path'
 import { VisionService } from './vision-service'
 import { customToolsServer } from './tools'
 import { setQuestionNotifier } from './tools/ask-user'
@@ -107,6 +110,34 @@ interface QueuedMessage {
   reject: (error: Error) => void
 }
 
+interface ToolEvent {
+  type: 'tool_use' | 'tool_result'
+  tool?: string
+  input?: Record<string, unknown>
+  output?: string
+}
+
+interface ActiveTurn {
+  id: string
+  userMessage: string
+  images?: Array<{ data: string; mediaType: string }>
+  textBlocks: string[]
+  toolEvents: ToolEvent[]
+  isComplete: boolean
+  startTime: number
+  endTime: number | null
+  costUsd: number | null
+  checkpointId?: string
+  currentThinking?: string
+  isThinking?: boolean
+}
+
+interface SessionMeta {
+  title: string
+  timestamp: number
+  completedTurns: ActiveTurn[]
+}
+
 interface Session {
   id: string
   sdkSessionId: string | null
@@ -123,6 +154,10 @@ interface Session {
   lastQuery: Query | null
   /** Active input channel for injecting messages into a running query */
   inputChannel: MessageChannel | null
+  /** The currently in-progress turn being accumulated in the main process */
+  activeTurn: ActiveTurn | null
+  /** Session metadata for auto-saving (title, completed turns, etc.) */
+  meta: SessionMeta | null
 }
 
 const DEFAULT_TOOLS = ['Read', 'Write', 'Edit', 'Glob', 'Grep', 'Bash', 'mcp__customTools__code_review', 'mcp__customTools__ask_user']
@@ -162,7 +197,9 @@ export class AgentService {
       messageQueue: [],
       abortController: null,
       lastQuery: null,
-      inputChannel: null
+      inputChannel: null,
+      activeTurn: null,
+      meta: null
     })
 
     console.log('[AgentService] Session created:', id, '| Total sessions:', this.sessions.size)
@@ -235,8 +272,26 @@ export class AgentService {
     return true
   }
 
-  getSessionInfo(sessionId: string): Session | null {
-    return this.sessions.get(sessionId) ?? null
+  getSessionInfo(sessionId: string): {
+    id: string
+    sdkSessionId: string | null
+    workingDirectory: string
+    createdAt: Date
+    allowedTools: string[]
+    isProcessing: boolean
+  } | null {
+    const session = this.sessions.get(sessionId)
+    if (!session) return null
+    // Return only serializable fields — AbortController, MessageChannel, Query etc.
+    // cannot be cloned over Electron IPC
+    return {
+      id: session.id,
+      sdkSessionId: session.sdkSessionId,
+      workingDirectory: session.config.workingDirectory,
+      createdAt: session.createdAt,
+      allowedTools: session.config.allowedTools,
+      isProcessing: session.isProcessing
+    }
   }
 
   listActiveSessions(): Array<{
@@ -270,6 +325,10 @@ export class AgentService {
       systemPrompt?: string
       allowedTools?: string[]
       model?: string
+      /** Turn ID from the renderer — used to sync turn identity between main and renderer */
+      turnId?: string
+      /** Session title from the renderer */
+      sessionTitle?: string
       previousTurns?: Array<{
         id: string
         userMessage: string
@@ -379,7 +438,10 @@ Please proceed to complete the user's request using the appropriate tools.`
           isProcessing: false,
           messageQueue: [],
           abortController: null,
-          lastQuery: null
+          lastQuery: null,
+          inputChannel: null,
+          activeTurn: null,
+          meta: null
         })
         session = this.sessions.get(params.sessionId)!
       }
@@ -416,9 +478,45 @@ Please proceed to complete the user's request using the appropriate tools.`
     const abortController = new AbortController()
     session.abortController = abortController
 
+    // Set up the active turn for main-process accumulation.
+    // The turnId and userMessage come from params so both renderer and main process
+    // track the same turn. If no turnId is provided, generate one.
+    const turnId = params.turnId || randomUUID()
+    session.activeTurn = {
+      id: turnId,
+      userMessage: params.content,
+      images: params.images,
+      textBlocks: [],
+      toolEvents: [],
+      isComplete: false,
+      startTime: Date.now(),
+      endTime: null,
+      costUsd: null
+    }
+
+    // Initialize or update session meta so auto-save has the correct title and turns
+    if (!session.meta) {
+      session.meta = {
+        title: params.sessionTitle || params.content.slice(0, 50) || 'Untitled Session',
+        timestamp: Date.now(),
+        completedTurns: (params.previousTurns || []) as ActiveTurn[]
+      }
+    } else {
+      // Update title if provided
+      if (params.sessionTitle) {
+        session.meta.title = params.sessionTitle
+      }
+      // Sync completed turns from renderer (in case of reconnect)
+      if (params.previousTurns) {
+        session.meta.completedTurns = params.previousTurns as ActiveTurn[]
+      }
+    }
+
     // Wrap onEvent to inject sessionId into every stream event
-    // so the renderer can filter out events from stale/other sessions
+    // so the renderer can filter out events from stale/other sessions.
+    // Also accumulate turn data in the main process and auto-save.
     const emitEvent = (event: StreamEvent): void => {
+      this.accumulateTurnEvent(session, event)
       onEvent({ ...event, sessionId: session.id })
     }
 
@@ -800,6 +898,175 @@ Please proceed to complete the user's request using the appropriate tools.`
 
     parts.push('</sessionContext>')
     return parts.join('\n')
+  }
+
+  /**
+   * Get the current active turn state for a session.
+   * Called by the renderer when switching back to a session to hydrate the UI.
+   */
+  getActiveTurnState(sessionId: string): { activeTurn: ActiveTurn | null; meta: SessionMeta | null } | null {
+    const session = this.sessions.get(sessionId)
+    if (!session) return null
+    return {
+      activeTurn: session.activeTurn,
+      meta: session.meta
+    }
+  }
+
+  /**
+   * Set session metadata (title, completed turns) from the renderer.
+   * Called when the renderer initialises or resumes a session.
+   */
+  setSessionMeta(sessionId: string, meta: { title: string; timestamp: number; completedTurns: ActiveTurn[] }): void {
+    const session = this.sessions.get(sessionId)
+    if (!session) return
+    session.meta = meta
+  }
+
+  /**
+   * Accumulate a stream event into the active turn in the main process.
+   * This mirrors the logic in BuildScreen's stream event listener but runs
+   * server-side so turn data is preserved even when the renderer navigates away.
+   */
+  private accumulateTurnEvent(session: Session, event: StreamEvent): void {
+    const turn = session.activeTurn
+    if (!turn) return
+
+    switch (event.event) {
+      case 'text': {
+        const text = event.data.text as string
+        // Same logic as BuildScreen: append text after the last tool group
+        const toolGroupCount = turn.toolEvents.filter(e => e.type === 'tool_result').length
+        const expectedBlockIdx = toolGroupCount
+        while (turn.textBlocks.length <= expectedBlockIdx) turn.textBlocks.push('')
+        turn.textBlocks[expectedBlockIdx] += text
+        // Auto-save periodically (debounced via scheduleSave)
+        this.scheduleSave(session)
+        break
+      }
+
+      case 'tool_use':
+        turn.toolEvents.push({
+          type: 'tool_use',
+          tool: event.data.tool as string,
+          input: event.data.input as Record<string, unknown>
+        })
+        this.scheduleSave(session)
+        break
+
+      case 'tool_result':
+        turn.toolEvents.push({
+          type: 'tool_result',
+          output: event.data.output as string
+        })
+        this.scheduleSave(session)
+        break
+
+      case 'system': {
+        const type = event.data.type as string
+        if (type === 'checkpoint') {
+          const userMessageId = event.data.userMessageId as string
+          if (userMessageId && !turn.checkpointId) {
+            turn.checkpointId = userMessageId
+          }
+        }
+        break
+      }
+
+      case 'thinking': {
+        const thinkingType = event.data.type as string
+        if (thinkingType === 'start') {
+          turn.isThinking = true
+          turn.currentThinking = (event.data.thinking as string) ?? ''
+        } else if (thinkingType === 'delta') {
+          turn.currentThinking = (turn.currentThinking ?? '') + (event.data.thinking as string)
+        } else if (thinkingType === 'stop') {
+          turn.isThinking = false
+        }
+        break
+      }
+
+      case 'done': {
+        turn.isComplete = true
+        turn.endTime = Date.now()
+        turn.costUsd = (event.data.costUsd as number) ?? null
+        // Update sdkSessionId
+        if (event.data.sdkSessionId) {
+          session.sdkSessionId = event.data.sdkSessionId as string
+        }
+        // Move completed turn to meta's completedTurns and clear active turn
+        if (session.meta) {
+          session.meta.completedTurns.push({ ...turn })
+        }
+        session.activeTurn = null
+        // Force immediate save on completion
+        this.saveSessionToDisk(session)
+        break
+      }
+
+      case 'error': {
+        if (turn.textBlocks.length === 0) turn.textBlocks.push('')
+        turn.textBlocks[turn.textBlocks.length - 1] += `\n\nError: ${event.data.error as string}`
+        turn.isComplete = true
+        turn.endTime = Date.now()
+        if (session.meta) {
+          session.meta.completedTurns.push({ ...turn })
+        }
+        session.activeTurn = null
+        this.saveSessionToDisk(session)
+        break
+      }
+    }
+  }
+
+  /** Debounced timer refs for auto-saving, keyed by session ID */
+  private saveTimers = new Map<string, ReturnType<typeof setTimeout>>()
+
+  /**
+   * Schedule a debounced save to disk (saves at most every 2 seconds during streaming).
+   */
+  private scheduleSave(session: Session): void {
+    if (this.saveTimers.has(session.id)) return // already scheduled
+    const timer = setTimeout(() => {
+      this.saveTimers.delete(session.id)
+      this.saveSessionToDisk(session)
+    }, 2000)
+    this.saveTimers.set(session.id, timer)
+  }
+
+  /**
+   * Write the full session (completed turns + active turn) to disk.
+   */
+  private async saveSessionToDisk(session: Session): Promise<void> {
+    if (!session.meta) return
+
+    const allTurns = [...session.meta.completedTurns]
+    if (session.activeTurn) {
+      allTurns.push({ ...session.activeTurn })
+    }
+
+    const sessionData = {
+      sessionId: session.id,
+      sdkSessionId: session.sdkSessionId,
+      title: session.meta.title,
+      timestamp: session.meta.timestamp,
+      endTime: Date.now(),
+      workingDirectory: session.config.workingDirectory,
+      turns: allTurns,
+      totalCost: allTurns.reduce((sum, t) => sum + (t.costUsd || 0), 0)
+    }
+
+    try {
+      const sessionsDir = join(session.config.workingDirectory, '.conntext', 'sessions')
+      if (!existsSync(sessionsDir)) {
+        await mkdir(sessionsDir, { recursive: true })
+      }
+      const sessionFile = join(sessionsDir, `${session.id}.json`)
+      await writeFile(sessionFile, JSON.stringify(sessionData, null, 2), 'utf-8')
+      console.log('[AgentService] Auto-saved session to disk:', session.id)
+    } catch (error) {
+      console.error('[AgentService] Failed to auto-save session:', error)
+    }
   }
 
   private handleSDKMessage(

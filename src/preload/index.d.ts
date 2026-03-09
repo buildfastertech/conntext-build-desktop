@@ -24,6 +24,7 @@ export interface UserInfo {
 export interface SessionData {
   sessionId: string
   sdkSessionId?: string | null
+  projectId?: string | null
   title: string
   timestamp: number
   endTime: number | null
@@ -71,6 +72,7 @@ export interface ToolEvent {
 
 export interface SessionMetadata {
   sessionId: string
+  projectId?: string | null
   title: string
   timestamp: number
   endTime: number | null
@@ -99,6 +101,7 @@ export interface AppState {
   claudeCodePath: string | null
   recentDirectories: string[]
   activeWorkspaceId: string | null
+  projectLastSessionIds: Record<string, string>
 }
 
 export interface SkillsInfo {
@@ -212,6 +215,8 @@ export interface ElectronAPI {
   getAppState: () => Promise<AppState>
   saveWorkingDirectory: (directory: string) => Promise<{ success: boolean }>
   saveSessionId: (sessionId: string) => Promise<{ success: boolean }>
+  saveProjectSessionId: (projectId: string, sessionId: string) => Promise<{ success: boolean }>
+  getProjectLastSessionId: (projectId: string) => Promise<string | null>
   clearAppState: () => Promise<{ success: boolean }>
   saveClaudeCodePath: (path: string) => Promise<{ success: boolean }>
   getClaudeCodePath: () => Promise<string | null>
@@ -244,6 +249,8 @@ export interface ElectronAPI {
     systemPrompt?: string
     allowedTools?: string[]
     model?: string
+    turnId?: string
+    sessionTitle?: string
     previousTurns?: Turn[]
   }) => Promise<{ sessionId: string; success: boolean }>
 
@@ -263,12 +270,16 @@ export interface ElectronAPI {
 
   listActiveSessions: () => Promise<ActiveSessionInfo[]>
 
+  getActiveTurnState: (sessionId: string) => Promise<{ activeTurn: Turn | null; meta: { title: string; timestamp: number; completedTurns: Turn[] } | null } | null>
+
+  setSessionMeta: (sessionId: string, meta: { title: string; timestamp: number; completedTurns: Turn[] }) => Promise<{ success: boolean }>
+
   // Session persistence
   saveSession: (sessionData: SessionData) => Promise<{ success: boolean }>
-  loadSession: (workingDirectory: string, sessionId: string) => Promise<SessionData | null>
-  listSessions: (workingDirectory: string) => Promise<SessionMetadata[]>
-  deleteSession: (workingDirectory: string, sessionId: string) => Promise<{ success: boolean }>
-  renameSession: (workingDirectory: string, sessionId: string, newTitle: string) => Promise<{ success: boolean }>
+  loadSession: (workingDirectory: string, sessionId: string, projectId?: string | null) => Promise<SessionData | null>
+  listSessions: (workingDirectory: string, projectId?: string | null) => Promise<SessionMetadata[]>
+  deleteSession: (workingDirectory: string, sessionId: string, projectId?: string | null) => Promise<{ success: boolean }>
+  renameSession: (workingDirectory: string, sessionId: string, newTitle: string, projectId?: string | null) => Promise<{ success: boolean }>
 
   // Skills
   syncSkills: (apiUrl: string, apiToken: string) => Promise<SkillsSyncResult>

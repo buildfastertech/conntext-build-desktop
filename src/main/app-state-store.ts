@@ -15,6 +15,7 @@ interface AppState {
   recentDirectories: string[]
   activeWorkspaceId: string | null
   windowBounds: WindowBounds | null
+  projectLastSessionIds: Record<string, string>
 }
 
 export class AppStateStore {
@@ -33,6 +34,7 @@ export class AppStateStore {
     const recentDirectories = (this.store.get('recentDirectories') as string[] | undefined) ?? []
     const activeWorkspaceId = this.store.get('activeWorkspaceId') as string | undefined
     const windowBounds = this.store.get('windowBounds') as WindowBounds | undefined
+    const projectLastSessionIds = (this.store.get('projectLastSessionIds') as Record<string, string> | undefined) ?? {}
 
     return {
       lastWorkingDirectory: lastWorkingDirectory ?? null,
@@ -40,7 +42,8 @@ export class AppStateStore {
       claudeCodePath: claudeCodePath ?? null,
       recentDirectories,
       activeWorkspaceId: activeWorkspaceId ?? null,
-      windowBounds: windowBounds ?? null
+      windowBounds: windowBounds ?? null,
+      projectLastSessionIds
     }
   }
 
@@ -54,6 +57,17 @@ export class AppStateStore {
 
   saveSessionId(sessionId: string): void {
     this.store.set('lastSessionId', sessionId)
+  }
+
+  saveProjectSessionId(projectId: string, sessionId: string): void {
+    const map = (this.store.get('projectLastSessionIds') as Record<string, string> | undefined) ?? {}
+    map[projectId] = sessionId
+    this.store.set('projectLastSessionIds', map)
+  }
+
+  getProjectLastSessionId(projectId: string): string | null {
+    const map = (this.store.get('projectLastSessionIds') as Record<string, string> | undefined) ?? {}
+    return map[projectId] ?? null
   }
 
   saveClaudeCodePath(path: string): void {
