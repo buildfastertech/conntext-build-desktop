@@ -3,6 +3,7 @@ import ReactMarkdown from 'react-markdown'
 import remarkGfm from 'remark-gfm'
 import { X, FileText, Copy, Check, Search, ChevronUp, ChevronDown, Code2 } from 'lucide-react'
 import hljs from 'highlight.js'
+import { RiveLoader } from './RiveLoader'
 import 'highlight.js/styles/github-dark.css'
 
 const EXT_TO_LANG: Record<string, string> = {
@@ -485,10 +486,7 @@ export function FilePreviewDialog({ isOpen, onClose, filePath, workingDirectory 
                 <div ref={contentRef} className="flex-1 overflow-auto">
                     {isLoading && (
                         <div className="flex items-center justify-center py-12">
-                            <svg className="h-6 w-6 animate-spin text-brand-purple" viewBox="0 0 24 24" fill="none">
-                                <circle className="opacity-25" cx="12" cy="12" r="10" stroke="currentColor" strokeWidth="3" />
-                                <path className="opacity-75" fill="currentColor" d="M4 12a8 8 0 018-8V0C5.373 0 0 5.373 0 12h4z" />
-                            </svg>
+                            <RiveLoader size="md" />
                         </div>
                     )}
 

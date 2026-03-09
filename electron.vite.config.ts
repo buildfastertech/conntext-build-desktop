@@ -18,6 +18,7 @@ export default defineConfig({
     plugins: [externalizeDepsPlugin()]
   },
   renderer: {
+    assetsInclude: ['**/*.riv'],
     plugins: [react(), tailwindcss()]
   }
 })

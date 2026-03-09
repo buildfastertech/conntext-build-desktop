@@ -10,6 +10,7 @@ import { AppHeader } from '../components/AppHeader'
 import { FilePreviewDialog } from '../components/FilePreviewDialog'
 import { QuestionDialog } from '../components/QuestionDialog'
 import { FolderSelector } from '../components/FolderSelector'
+import { RiveLoader } from '../components/RiveLoader'
 
 const AVAILABLE_MODELS = [
   { value: 'claude-sonnet-4-5-20250929', label: 'Sonnet 4.5', description: 'Fast & capable' },
@@ -582,7 +583,10 @@ export function BuildScreen({ user, onLogout, workingDirectory: initialWorkingDi
                 : 0
               while (blocks.length <= expectedBlockIdx) blocks.push('')
               blocks[expectedBlockIdx] += text
-              return { ...t, textBlocks: blocks, currentPartialText: undefined }
+              // Only clear currentPartialText if we actually wrote meaningful text.
+              // An empty 'text' event (e.g. from an assistant message with only tool calls)
+              // should not wipe out accumulated partial_text streaming content.
+              return { ...t, textBlocks: blocks, ...(text ? { currentPartialText: undefined } : {}) }
             })
           )
           scrollToBottom()
@@ -715,6 +719,19 @@ export function BuildScreen({ user, onLogout, workingDirectory: initialWorkingDi
                 // Only commit if the text block is empty (avoid duplication with 'text' events)
                 if (!blocks[expectedBlockIdx]) {
                   blocks[expectedBlockIdx] = t.currentPartialText
+                }
+              }
+
+              // Fallback: if ALL textBlocks are empty and the SDK result message
+              // contains the final response text, use it. This handles edge cases
+              // where 'text' events didn't fire or currentPartialText was cleared.
+              const hasAnyText = blocks.some(b => b?.trim())
+              if (!hasAnyText && event.data.result) {
+                const resultText = String(event.data.result)
+                if (resultText.trim()) {
+                  const toolGroupCount = t.toolEvents.filter(e => e.type === 'tool_result').length
+                  while (blocks.length <= toolGroupCount) blocks.push('')
+                  blocks[toolGroupCount] = resultText
                 }
               }
 
@@ -3000,7 +3017,7 @@ Once the PRD file exists, run the skill:
               {/* Status indicator */}
               {isStreaming && (
                 <div className="flex-shrink-0 flex items-center gap-1.5 px-3 text-xs text-brand-text-dim">
-                  <span className="inline-block h-1.5 w-1.5 animate-pulse rounded-full bg-brand-purple" />
+                  <RiveLoader size="xs" />
                   <span>Working</span>
                 </div>
               )}
@@ -3911,7 +3928,7 @@ const TurnBlock = memo(function TurnBlock({ turn, liveElapsed, onFileClick, pend
           {/* Working indicator */}
           {pendingQuestions.length === 0 && (
             <div className="flex items-center gap-2 py-1 text-xs text-brand-text-muted">
-              <span className="inline-block h-1.5 w-1.5 animate-pulse rounded-full bg-brand-purple" />
+              <RiveLoader size="xs" />
               Working...
               <span className="font-mono text-brand-text-dim">{formatDuration(duration)}</span>
             </div>
