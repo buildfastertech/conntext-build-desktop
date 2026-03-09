@@ -53,6 +53,8 @@ export interface Turn {
   isThinking?: boolean
   /** Progress updates for currently running tools */
   toolProgress?: Record<string, { toolName: string; elapsedSeconds: number }>
+  /** Messages injected by the user mid-turn while agent is streaming */
+  injectedMessages?: string[]
 }
 
 export interface RewindFilesResult {

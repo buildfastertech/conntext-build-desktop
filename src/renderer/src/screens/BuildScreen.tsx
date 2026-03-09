@@ -1,4 +1,5 @@
 import { useState, useRef, useEffect, useCallback, memo } from 'react'
+import { flushSync } from 'react-dom'
 import ReactMarkdown from 'react-markdown'
 import remarkGfm from 'remark-gfm'
 import { FolderOpen, Pencil, Check, X, ChevronDown, RefreshCw, AlertCircle, Layers, Blocks, Lightbulb, Users, Heart, TrendingUp, DollarSign, Cpu, Palette, Link2, Cog, MessageSquare, Hammer } from 'lucide-react'
@@ -460,34 +461,34 @@ export function BuildScreen({ user, onLogout, workingDirectory: initialWorkingDi
     // Handoff guards: set streaming guard BEFORE clearing processing guard
     // This ensures continuous protection against concurrent queue processing
     isStreamingRef.current = true
-    setIsStreaming(true)
     // Safe to clear processing flag now - isStreamingRef takes over as guard
     isProcessingQueueRef.current = false
     activeTurnIdRef.current = turnId
     localStorage.setItem('activeTurnId', turnId)
 
-    setTurns((prev) => {
-      const updatedTurns = [...prev, newTurn]
-
-      // Save session immediately with updated turns
-      if (workingDirectoryRef.current && sessionIdRef.current) {
-        const sessionData = {
-          sessionId: sessionIdRef.current,
-          projectId: projectIdRef.current,
-          title: currentSessionTitleRef.current || updatedTurns[0]?.userMessage?.slice(0, 50) || 'Untitled Session',
-          timestamp: updatedTurns[0]?.startTime || Date.now(),
-          endTime: Date.now(),
-          workingDirectory: workingDirectoryRef.current,
-          turns: updatedTurns,
-          totalCost: updatedTurns.reduce((sum, t) => sum + (t.costUsd || 0), 0)
-        }
-        window.api.saveSession(sessionData).catch(err =>
-          console.error('[BuildScreen] Failed to save session:', err)
-        )
-      }
-
-      return updatedTurns
+    // Force React to paint the queued message immediately before IPC serialization
+    flushSync(() => {
+      setIsStreaming(true)
+      setTurns((prev) => [...prev, newTurn])
     })
+
+    // Save session in background (after paint)
+    if (workingDirectoryRef.current && sessionIdRef.current) {
+      const allTurns = [...turnsRef.current]
+      const sessionData = {
+        sessionId: sessionIdRef.current,
+        projectId: projectIdRef.current,
+        title: currentSessionTitleRef.current || allTurns[0]?.userMessage?.slice(0, 50) || 'Untitled Session',
+        timestamp: allTurns[0]?.startTime || Date.now(),
+        endTime: Date.now(),
+        workingDirectory: workingDirectoryRef.current,
+        turns: allTurns,
+        totalCost: allTurns.reduce((sum, t) => sum + (t.costUsd || 0), 0)
+      }
+      window.api.saveSession(sessionData).catch(err =>
+        console.error('[BuildScreen] Failed to save session:', err)
+      )
+    }
 
     // Send the message with conversation history
     console.log('[Queue] Sending queued message to API')
@@ -994,10 +995,13 @@ This file stores important context and information for the AI agent.
     }
 
     activeTurnIdRef.current = turnId
-    setTurns((prev) => [...prev, newTurn])
-    setInput('')
     isStreamingRef.current = true
-    setIsStreaming(true)
+
+    flushSync(() => {
+      setTurns((prev) => [...prev, newTurn])
+      setInput('')
+      setIsStreaming(true)
+    })
 
     // Persist active turn ID
     localStorage.setItem('activeTurnId', turnId)
@@ -1142,23 +1146,21 @@ This file stores important context and information for the AI agent.
         try {
           const { injected } = await window.api.injectMessage(activeSessionId, trimmed)
           if (injected) {
-            // Show the injected message in the active turn's text blocks
+            // Show the injected message as a separate user bubble
             const turnId = activeTurnIdRef.current
             if (turnId) {
-              setTurns((prev) =>
-                prev.map((t) => {
-                  if (t.id !== turnId) return t
-                  const blocks = [...t.textBlocks]
-                  // Insert a visual marker for the injected user message
-                  const lastToolIdx = t.toolEvents.length
-                  const expectedBlockIdx = lastToolIdx > 0 ? countToolGroups(t.toolEvents) : 0
-                  while (blocks.length <= expectedBlockIdx) blocks.push('')
-                  blocks[expectedBlockIdx] += `\n\n> **You:** ${trimmed}\n\n`
-                  return { ...t, textBlocks: blocks }
-                })
-              )
+              flushSync(() => {
+                setTurns((prev) =>
+                  prev.map((t) => {
+                    if (t.id !== turnId) return t
+                    return { ...t, injectedMessages: [...(t.injectedMessages || []), trimmed] }
+                  })
+                )
+                setInput('')
+              })
+            } else {
+              setInput('')
             }
-            setInput('')
             if (inputRef.current) {
               inputRef.current.style.height = 'auto'
             }
@@ -1217,10 +1219,14 @@ This file stores important context and information for the AI agent.
         }
 
         activeTurnIdRef.current = turnId
-        setTurns((prev) => [...prev, newTurn])
-        setPastedImages([])
         isStreamingRef.current = true
-    setIsStreaming(true)
+
+        flushSync(() => {
+          setTurns((prev) => [...prev, newTurn])
+          setPastedImages([])
+          setIsStreaming(true)
+        })
+
         localStorage.setItem('activeTurnId', turnId)
 
         // Save session immediately
@@ -1320,10 +1326,14 @@ This file stores important context and information for the AI agent.
         }
 
         activeTurnIdRef.current = turnId
-        setTurns((prev) => [...prev, newTurn])
-        setPastedImages([])
         isStreamingRef.current = true
-        setIsStreaming(true)
+
+        flushSync(() => {
+          setTurns((prev) => [...prev, newTurn])
+          setPastedImages([])
+          setIsStreaming(true)
+        })
+
         localStorage.setItem('activeTurnId', turnId)
 
         // Save session immediately
@@ -1457,11 +1467,15 @@ You MUST focus your work within these folders. When reading, writing, editing, o
     }
 
     activeTurnIdRef.current = turnId
-    setTurns((prev) => [...prev, newTurn])
-    setInput('')
-    setPastedImages([])
     isStreamingRef.current = true
-    setIsStreaming(true)
+
+    // Force React to paint the user message immediately before IPC serialization
+    flushSync(() => {
+      setTurns((prev) => [...prev, newTurn])
+      setInput('')
+      setPastedImages([])
+      setIsStreaming(true)
+    })
 
     // Persist active turn ID so we can resume after hot reload
     localStorage.setItem('activeTurnId', turnId)
@@ -1572,10 +1586,13 @@ You MUST focus your work within these folders. When reading, writing, editing, o
     }
 
     activeTurnIdRef.current = turnId
-    setTurns((prev) => [...prev, newTurn])
-    setInput('')
     isStreamingRef.current = true
-    setIsStreaming(true)
+
+    flushSync(() => {
+      setTurns((prev) => [...prev, newTurn])
+      setInput('')
+      setIsStreaming(true)
+    })
 
     // Persist active turn ID
     localStorage.setItem('activeTurnId', turnId)
@@ -3900,6 +3917,15 @@ const TurnBlock = memo(function TurnBlock({ turn, liveElapsed, onFileClick, pend
 
         return <>{elements}</>
       })()}
+
+      {/* Injected user messages (sent while agent was working) */}
+      {turn.injectedMessages && turn.injectedMessages.map((msg, i) => (
+        <div key={`injected-${i}`} className="flex justify-end">
+          <div className="max-w-[85%] rounded-lg bg-brand-purple/80 px-4 py-3 text-sm text-white select-text">
+            <div className="whitespace-pre-wrap">{msg}</div>
+          </div>
+        </div>
+      ))}
 
       {/* Streaming partial text — show as bubble when no tools, in activity area when tools are active */}
       {isWorking && turn.currentPartialText && turn.toolEvents.length === 0 && (
