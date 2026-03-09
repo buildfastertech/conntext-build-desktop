@@ -702,21 +702,35 @@ export function BuildScreen({ user, onLogout, workingDirectory: initialWorkingDi
             setSdkSessionId(event.data.sdkSessionId as string)
           }
           setTurns((prev) =>
-            prev.map((t) =>
-              t.id === turnId
-                ? {
-                    ...t,
-                    isComplete: true,
-                    endTime: Date.now(),
-                    costUsd: (event.data.costUsd as number) ?? null,
-                    // Clear transient streaming state
-                    currentPartialText: undefined,
-                    currentThinking: undefined,
-                    isThinking: false,
-                    toolProgress: undefined
-                  }
-                : t
-            )
+            prev.map((t) => {
+              if (t.id !== turnId) return t
+
+              // If currentPartialText has content that wasn't committed to textBlocks
+              // (e.g. partial_text events arrived but no 'text' event followed), commit it now
+              const blocks = [...t.textBlocks]
+              if (t.currentPartialText) {
+                const toolGroupCount = t.toolEvents.filter(e => e.type === 'tool_result').length
+                const expectedBlockIdx = toolGroupCount
+                while (blocks.length <= expectedBlockIdx) blocks.push('')
+                // Only commit if the text block is empty (avoid duplication with 'text' events)
+                if (!blocks[expectedBlockIdx]) {
+                  blocks[expectedBlockIdx] = t.currentPartialText
+                }
+              }
+
+              return {
+                ...t,
+                textBlocks: blocks,
+                isComplete: true,
+                endTime: Date.now(),
+                costUsd: (event.data.costUsd as number) ?? null,
+                // Clear transient streaming state
+                currentPartialText: undefined,
+                currentThinking: undefined,
+                isThinking: false,
+                toolProgress: undefined
+              }
+            })
           )
           // Clear active turn from localStorage when done
           if (localStorage.getItem('activeTurnId') === turnId) {
@@ -3752,43 +3766,38 @@ const TurnBlock = memo(function TurnBlock({ turn, liveElapsed, onFileClick, pend
         </div>
       )}
 
-      {/* Activity log — deliberation text, tool events, all grouped together */}
-      {(() => {
+      {/* No-tools response: show all text blocks as message bubbles */}
+      {turn.toolEvents.length === 0 && turn.textBlocks.map((block, i) => {
+        const text = block?.trim()
+        if (!text) return null
+        return (
+          <div key={`text-${i}`} className="flex justify-start group">
+            <div className="relative prose-response max-w-[85%] rounded-lg border border-brand-border bg-brand-card px-4 py-3 text-sm text-brand-text select-text">
+              <ClickableMarkdown onFileClick={onFileClick}>{text}</ClickableMarkdown>
+              <button
+                onClick={() => handleCopy(text, `text-${i}-${turn.id}`)}
+                className="absolute -right-8 top-2 opacity-0 group-hover:opacity-100 transition-opacity p-1.5 rounded-lg hover:bg-brand-border/30"
+                title="Copy message"
+              >
+                {copiedId === `text-${i}-${turn.id}` ? (
+                  <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round" className="text-brand-purple">
+                    <polyline points="20 6 9 17 4 12"></polyline>
+                  </svg>
+                ) : (
+                  <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round" className="text-brand-text-dim">
+                    <rect x="9" y="9" width="13" height="13" rx="2" ry="2"></rect>
+                    <path d="M5 15H4a2 2 0 0 1-2-2V4a2 2 0 0 1 2-2h9a2 2 0 0 1 2 2v1"></path>
+                  </svg>
+                )}
+              </button>
+            </div>
+          </div>
+        )
+      })}
+
+      {/* Has tools: activity area with deliberation text + tool events, then final response bubble */}
+      {turn.toolEvents.length > 0 && (() => {
         const toolGroups = groupToolEvents(turn.toolEvents)
-        const hasTools = toolGroups.length > 0
-
-        // No tools at all — show all text blocks as message bubbles
-        if (!hasTools) {
-          return turn.textBlocks.map((block, i) => {
-            const text = block.trim()
-            if (!text) return null
-            return (
-              <div key={`text-${i}`} className="flex justify-start group">
-                <div className="relative prose-response max-w-[85%] rounded-lg border border-brand-border bg-brand-card px-4 py-3 text-sm text-brand-text select-text">
-                  <ClickableMarkdown onFileClick={onFileClick}>{text}</ClickableMarkdown>
-                  <button
-                    onClick={() => handleCopy(text, `text-${i}-${turn.id}`)}
-                    className="absolute -right-8 top-2 opacity-0 group-hover:opacity-100 transition-opacity p-1.5 rounded-lg hover:bg-brand-border/30"
-                    title="Copy message"
-                  >
-                    {copiedId === `text-${i}-${turn.id}` ? (
-                      <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round" className="text-brand-purple">
-                        <polyline points="20 6 9 17 4 12"></polyline>
-                      </svg>
-                    ) : (
-                      <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round" className="text-brand-text-dim">
-                        <rect x="9" y="9" width="13" height="13" rx="2" ry="2"></rect>
-                        <path d="M5 15H4a2 2 0 0 1-2-2V4a2 2 0 0 1 2-2h9a2 2 0 0 1 2 2v1"></path>
-                      </svg>
-                    )}
-                  </button>
-                </div>
-              </div>
-            )
-          })
-        }
-
-        // Has tools — deliberation text goes in activity area, final text gets a bubble
         const elements: React.ReactNode[] = []
         const lastTextIdx = turn.textBlocks.length - 1
 
@@ -3864,19 +3873,28 @@ const TurnBlock = memo(function TurnBlock({ turn, liveElapsed, onFileClick, pend
           )
         }
 
-        return elements
+        return <>{elements}</>
       })()}
 
-      {/* Thinking / streaming partial text / working indicator — all in the activity area */}
-      {isWorking && (turn.isThinking || turn.currentPartialText || pendingQuestions.length === 0) && (
+      {/* Streaming partial text — show as bubble when no tools, in activity area when tools are active */}
+      {isWorking && turn.currentPartialText && turn.toolEvents.length === 0 && (
+        <div className="flex justify-start">
+          <div className="prose-response max-w-[85%] rounded-lg border border-brand-border bg-brand-card px-4 py-3 text-sm text-brand-text select-text opacity-80">
+            <ClickableMarkdown onFileClick={onFileClick}>{turn.currentPartialText}</ClickableMarkdown>
+          </div>
+        </div>
+      )}
+
+      {/* Thinking / streaming partial text (with tools) / working indicator — in activity area */}
+      {isWorking && (turn.isThinking || (turn.currentPartialText && turn.toolEvents.length > 0) || pendingQuestions.length === 0) && (
         <div className="ml-2 border-l-2 border-brand-border-subtle pl-4">
           {/* Thinking indicator */}
           {turn.isThinking && turn.currentThinking && (
             <ThinkingBlock text={turn.currentThinking} />
           )}
 
-          {/* Streaming partial text (before it gets committed to a textBlock) */}
-          {turn.currentPartialText && (
+          {/* Streaming partial text when tools are active (deliberation) */}
+          {turn.currentPartialText && turn.toolEvents.length > 0 && (
             <div className="py-1 text-xs text-brand-text-muted">
               <ClickableMarkdown onFileClick={onFileClick}>{turn.currentPartialText}</ClickableMarkdown>
             </div>
