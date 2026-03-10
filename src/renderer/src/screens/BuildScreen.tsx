@@ -3933,8 +3933,28 @@ const TurnBlock = memo(function TurnBlock({ turn, liveElapsed, onFileClick, pend
           )
         }
 
-        // Final response bubble — find the last non-empty text block and show as bubble
-        const finalText = [...turn.textBlocks].reverse().find(b => b?.trim())?.trim() || ''
+        // Final response bubble — only show when the last non-empty text block
+        // comes AFTER all tool groups (i.e. it's a genuine final answer, not
+        // deliberation text before a tool call that happened to be last).
+        const finalText = finalResponseIdx !== -1
+          ? (turn.textBlocks[finalResponseIdx]?.trim() || '')
+          : ''
+
+        // When a turn completes with tool calls but no final text response,
+        // add a subtle completion marker so the activity log doesn't just stop.
+        if (turn.isComplete && !finalText && activityItems.length > 0) {
+          elements.push(
+            <div key="completed-marker" className="ml-2 border-l-2 border-brand-border-subtle pl-4">
+              <div className="py-1 text-xs text-brand-text-dim flex items-center gap-1.5">
+                <svg width="10" height="10" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.5" strokeLinecap="round" strokeLinejoin="round" className="text-green-500">
+                  <polyline points="20 6 9 17 4 12" />
+                </svg>
+                Task completed
+              </div>
+            </div>
+          )
+        }
+
         if (turn.isComplete && finalText) {
           elements.push(
             <div key="final" className="flex justify-start group">
