@@ -191,8 +191,10 @@ export interface ProjectFeature {
   order_index: number
   prd_summary: string | null
   prd_summary_status: string
+  prd_summary_generated_at: string | null
   spec: string | null
   spec_status: string
+  spec_generated_at: string | null
   labels: Array<{ id: string; name: string }>
   created_at: string
   updated_at: string

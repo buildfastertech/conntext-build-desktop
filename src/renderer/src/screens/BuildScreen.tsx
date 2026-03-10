@@ -2609,11 +2609,14 @@ You MUST focus your work within these folders. When reading, writing, editing, o
                     <div className="mt-1.5 flex items-center gap-1.5 pl-[21px]">
                       {getStatusBadge(feature.status)}
                       {getPriorityBadge(feature.priority)}
-                      {feature.prd_summary_status === 'generated' && (
-                        <span className="text-[9px] font-medium text-emerald-400/50">PRD</span>
-                      )}
-                      {feature.spec_status === 'generated' && (
-                        <span className="text-[9px] font-medium text-sky-400/50">Spec</span>
+                      {feature.prd_summary_status === 'generated' ? (
+                        <span className="text-[9px] font-medium text-emerald-400/50" title={feature.prd_summary_generated_at ? `PRD generated ${new Date(feature.prd_summary_generated_at).toLocaleDateString()}` : undefined}>
+                          PRD Generated
+                        </span>
+                      ) : feature.prd_summary_status === 'generating' ? (
+                        <span className="text-[9px] font-medium text-amber-400/50">PRD...</span>
+                      ) : (
+                        <span className="text-[9px] font-medium text-brand-text-dim/30">No PRD</span>
                       )}
                     </div>
 
@@ -2709,15 +2712,23 @@ Once the PRD file exists, run the skill:
                         {children.map((child) => {
                           const childCat = getCategoryColor(child.brainstorm_category)
                           return (
-                            <div
-                              key={child.id}
-                              className="flex items-center gap-2 rounded-md px-2 py-1"
-                            >
-                              <span className="shrink-0">{childCat.icon}</span>
-                              <span className="min-w-0 flex-1 truncate text-[11px] text-brand-text-secondary">
-                                {child.title}
-                              </span>
-                              {getStatusBadge(child.status)}
+                            <div key={child.id} className="rounded-md px-2 py-1">
+                              <div className="flex items-center gap-2">
+                                <span className="shrink-0">{childCat.icon}</span>
+                                <span className="min-w-0 flex-1 truncate text-[11px] text-brand-text-secondary">
+                                  {child.title}
+                                </span>
+                                {getStatusBadge(child.status)}
+                              </div>
+                              <div className="mt-0.5 pl-[21px]">
+                                {child.prd_summary_status === 'generated' ? (
+                                  <span className="text-[9px] font-medium text-emerald-400/50">PRD Generated</span>
+                                ) : child.prd_summary_status === 'generating' ? (
+                                  <span className="text-[9px] font-medium text-amber-400/50">PRD...</span>
+                                ) : (
+                                  <span className="text-[9px] font-medium text-brand-text-dim/30">No PRD</span>
+                                )}
+                              </div>
                             </div>
                           )
                         })}
