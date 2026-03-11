@@ -3,8 +3,8 @@ import { flushSync } from 'react-dom'
 import ReactMarkdown from 'react-markdown'
 import remarkGfm from 'remark-gfm'
 import { toast } from 'sonner'
-import { FolderOpen, Pencil, Check, X, ChevronDown, RefreshCw, AlertCircle, Layers, Blocks, Lightbulb, Users, Heart, TrendingUp, DollarSign, Cpu, Palette, Link2, Cog, MessageSquare, Hammer } from 'lucide-react'
-import type { StreamEvent, UserInfo, SessionMetadata, Turn, ToolEvent, Workspace, UserQuestion, Project, ProjectFeature } from '../../../preload/index.d'
+import { FolderOpen, Pencil, Check, X, ChevronDown, ChevronUp, RefreshCw, AlertCircle, Layers, Blocks, Lightbulb, Users, Heart, TrendingUp, DollarSign, Cpu, Palette, Link2, Cog, MessageSquare, Hammer, Zap, User, ListTodo, Ticket } from 'lucide-react'
+import type { StreamEvent, UserInfo, SessionMetadata, Turn, ToolEvent, Workspace, UserQuestion, Project, ProjectFeature, ProductOwner, ActiveTask, ActiveTicket } from '../../../preload/index.d'
 import { ResizablePanes } from '../components/ResizablePanes'
 import { MemoryDialog } from '../components/MemoryDialog'
 import { SettingsDialog } from '../components/SettingsDialog'
@@ -89,6 +89,10 @@ export function BuildScreen({ user, onLogout, workingDirectory: initialWorkingDi
   const [projectFeatures, setProjectFeatures] = useState<ProjectFeature[]>([])
   const [isFeaturesLoading, setIsFeaturesLoading] = useState(false)
   const [featuresError, setFeaturesError] = useState<string | null>(null)
+  const [productOwners, setProductOwners] = useState<ProductOwner[]>([])
+  const [activeTasks, setActiveTasks] = useState<ActiveTask[]>([])
+  const [activeTickets, setActiveTickets] = useState<ActiveTicket[]>([])
+  const [isActiveTasksPanelCollapsed, setIsActiveTasksPanelCollapsed] = useState(false)
   const activeTurnIdRef = useRef<string | null>(null)
   const messagesEndRef = useRef<HTMLDivElement>(null)
   const inputRef = useRef<HTMLTextAreaElement>(null)
@@ -923,10 +927,51 @@ export function BuildScreen({ user, onLogout, workingDirectory: initialWorkingDi
     }
   }, [selectedProject?.id, activeWorkspaceProp?.id])
 
-  // Load features when project or workspace changes
+  const loadProductOwners = useCallback(async () => {
+    if (!selectedProject?.id || !activeWorkspaceProp?.id) {
+      setProductOwners([])
+      return
+    }
+
+    try {
+      const result = await window.api.fetchProductOwners(activeWorkspaceProp.id, selectedProject.id)
+      if (result.success) {
+        setProductOwners(result.data)
+      } else {
+        setProductOwners([])
+      }
+    } catch {
+      setProductOwners([])
+    }
+  }, [selectedProject?.id, activeWorkspaceProp?.id])
+
+  const loadActiveTasks = useCallback(async () => {
+    if (!selectedProject?.id || !activeWorkspaceProp?.id) {
+      setActiveTasks([])
+      setActiveTickets([])
+      return
+    }
+
+    try {
+      const [tasksResult, ticketsResult] = await Promise.all([
+        window.api.fetchActiveTasks(activeWorkspaceProp.id, selectedProject.id),
+        window.api.fetchActiveTickets(activeWorkspaceProp.id),
+      ])
+
+      setActiveTasks(tasksResult.success ? tasksResult.data : [])
+      setActiveTickets(ticketsResult.success ? ticketsResult.data : [])
+    } catch {
+      setActiveTasks([])
+      setActiveTickets([])
+    }
+  }, [selectedProject?.id, activeWorkspaceProp?.id])
+
+  // Load features, product owners, and active tasks when project or workspace changes
   useEffect(() => {
     loadFeatures()
-  }, [loadFeatures])
+    loadProductOwners()
+    loadActiveTasks()
+  }, [loadFeatures, loadProductOwners, loadActiveTasks])
 
   const handleSyncSkills = async () => {
     setIsSyncingSkills(true)
@@ -1818,6 +1863,11 @@ You MUST focus your work within these folders. When reading, writing, editing, o
     setCurrentSessionTitle('')
     setPastedImages([])
     setInput('')
+    // Clear refs immediately so a quick follow-up message doesn't resume the old session
+    sessionIdRef.current = null
+    sdkSessionIdRef.current = null
+    turnsRef.current = []
+    currentSessionTitleRef.current = ''
     // Clear streaming state so it doesn't leak into the new session
     activeTurnIdRef.current = null
     isStreamingRef.current = false
@@ -3354,6 +3404,233 @@ You MUST focus your work within these folders. When reading, writing, editing, o
         onNewSession={handleNewSession}
         onRenameSession={handleRenameSession}
       />
+
+      {/* Active Tasks panel */}
+      {selectedProject && (productOwners.length > 0 || activeTasks.length > 0 || activeTickets.length > 0) && (
+        <div className="border-b border-brand-border/40" style={{ background: 'linear-gradient(135deg, rgba(20,20,24,0.97) 0%, rgba(16,16,20,0.99) 100%)' }}>
+          <div className="px-4 py-2">
+            {/* Panel header — always visible */}
+            <button
+              onClick={() => setIsActiveTasksPanelCollapsed(prev => !prev)}
+              className="flex w-full cursor-pointer items-center justify-between"
+            >
+              <div className="flex items-center gap-2">
+                <div className="flex h-5 w-5 items-center justify-center rounded-md bg-amber-500/15">
+                  <Zap size={11} className="text-amber-400" />
+                </div>
+                <span className="text-[11px] font-semibold tracking-wide uppercase text-brand-text-secondary">
+                  Active Tasks
+                </span>
+                {(activeTasks.length + activeTickets.length) > 0 && (
+                  <span className="rounded-full bg-amber-500/15 px-1.5 py-0.5 text-[10px] font-medium tabular-nums text-amber-400">
+                    {activeTasks.length + activeTickets.length}
+                  </span>
+                )}
+              </div>
+              <div className="flex items-center gap-2">
+                {/* Employee avatars — always visible as summary when collapsed */}
+                {productOwners.length > 0 && isActiveTasksPanelCollapsed && (
+                  <div className="flex items-center gap-2">
+                    {productOwners.slice(0, 4).map(owner => {
+                      const taskCount = activeTasks.filter(t => t.assigned_to_id === owner.id).length
+                        + activeTickets.filter(t => t.assigned_to_id === owner.id).length
+                      return (
+                        <div key={owner.id} className="flex items-center gap-1.5">
+                          <div className="relative">
+                            {owner.profile_photo_url ? (
+                              <img
+                                src={owner.profile_photo_url}
+                                alt={owner.name}
+                                className="h-5 w-5 rounded-full object-cover ring-1 ring-brand-border/40"
+                              />
+                            ) : (
+                              <div className="flex h-5 w-5 items-center justify-center rounded-full bg-brand-purple/20 ring-1 ring-brand-purple/30">
+                                <User size={10} className="text-brand-purple-soft" />
+                              </div>
+                            )}
+                          </div>
+                          <span className="text-[10px] text-brand-text-dim">{owner.name}</span>
+                          {taskCount > 0 && (
+                            <span className="rounded-full bg-amber-500/15 px-1 py-0.5 text-[9px] font-medium tabular-nums text-amber-400">
+                              {taskCount}
+                            </span>
+                          )}
+                        </div>
+                      )
+                    })}
+                    {productOwners.length > 4 && (
+                      <span className="text-[10px] text-brand-text-dim">+{productOwners.length - 4}</span>
+                    )}
+                  </div>
+                )}
+                {isActiveTasksPanelCollapsed ? (
+                  <ChevronDown size={13} className="text-brand-text-dim" />
+                ) : (
+                  <ChevronUp size={13} className="text-brand-text-dim" />
+                )}
+              </div>
+            </button>
+
+            {/* Expanded content — employee rows with their assigned tasks */}
+            {!isActiveTasksPanelCollapsed && (
+              <div className="mt-3 flex flex-col gap-2.5">
+                {productOwners.map(owner => {
+                  const ownerTasks = activeTasks.filter(t => t.assigned_to_id === owner.id)
+                  const ownerTickets = activeTickets.filter(t => t.assigned_to_id === owner.id)
+                  const priorityColors: Record<string, string> = {
+                    critical: 'border-red-500/40 text-red-400',
+                    high: 'border-red-400/30 text-red-400',
+                    medium: 'border-amber-400/30 text-amber-400',
+                    low: 'border-sky-400/30 text-sky-400',
+                  }
+
+                  return (
+                    <div
+                      key={owner.id}
+                      className="flex items-start gap-4 rounded-xl border border-brand-border/20 px-3.5 py-3"
+                      style={{ background: 'linear-gradient(135deg, rgba(139,92,246,0.04) 0%, rgba(20,20,24,0.6) 100%)' }}
+                    >
+                      {/* Left — Employee identity */}
+                      <div className="flex shrink-0 items-center gap-3" style={{ minWidth: '180px' }}>
+                        <div className="relative">
+                          {owner.profile_photo_url ? (
+                            <img
+                              src={owner.profile_photo_url}
+                              alt={owner.name}
+                              className="h-10 w-10 rounded-full object-cover ring-2 ring-brand-purple/30 shadow-lg shadow-brand-purple/10"
+                            />
+                          ) : (
+                            <div className="flex h-10 w-10 items-center justify-center rounded-full bg-gradient-to-br from-brand-purple/30 to-brand-purple/10 ring-2 ring-brand-purple/30">
+                              <User size={16} className="text-brand-purple-soft" />
+                            </div>
+                          )}
+                          <span className="absolute -bottom-0.5 -right-0.5 inline-flex h-2.5 w-2.5 rounded-full border-2 border-[#141418] bg-emerald-400 shadow-sm shadow-emerald-400/50" />
+                        </div>
+                        <div className="flex flex-col gap-0.5">
+                          <span className="text-[12px] font-semibold leading-tight text-brand-text">{owner.name}</span>
+                          <span className="text-[10px] leading-tight text-brand-text-dim">{owner.job_description}</span>
+                        </div>
+                      </div>
+
+                      {/* Right — Assigned tasks & tickets */}
+                      <div className="flex flex-1 flex-wrap items-center gap-1.5 overflow-hidden">
+                        {ownerTasks.length === 0 && ownerTickets.length === 0 && (
+                          <span className="text-[10px] italic text-brand-text-dim/50">No active tasks</span>
+                        )}
+                        {ownerTasks.map(task => {
+                          const pStyle = priorityColors[task.priority] || 'border-brand-border/30 text-brand-text-dim'
+                          return (
+                            <div
+                              key={task.id}
+                              className="flex items-center gap-2 rounded-lg border border-brand-border/25 bg-brand-card/40 px-2.5 py-1.5"
+                              style={{ maxWidth: '280px' }}
+                            >
+                              {task.status === 'in_progress'
+                                ? <span className="inline-flex h-1.5 w-1.5 shrink-0 rounded-full bg-blue-400 animate-pulse" />
+                                : <span className="inline-flex h-1.5 w-1.5 shrink-0 rounded-full bg-brand-text-dim/40" />
+                              }
+                              <ListTodo size={10} className="shrink-0 text-brand-text-dim/60" />
+                              <span className="min-w-0 flex-1 truncate text-[11px] font-medium text-brand-text">{task.title}</span>
+                              <span className={`shrink-0 rounded border px-1 py-0.5 text-[8px] font-bold uppercase tracking-wider ${pStyle}`}>
+                                {task.priority}
+                              </span>
+                            </div>
+                          )
+                        })}
+                        {ownerTickets.map(ticket => {
+                          const pStyle = priorityColors[ticket.priority] || 'border-brand-border/30 text-brand-text-dim'
+                          return (
+                            <div
+                              key={ticket.id}
+                              className="flex items-center gap-2 rounded-lg border border-brand-border/25 bg-brand-card/40 px-2.5 py-1.5"
+                              style={{ maxWidth: '280px' }}
+                            >
+                              <Ticket size={10} className="shrink-0 text-brand-purple-soft/60" />
+                              <span className="shrink-0 rounded bg-brand-purple/15 px-1 py-0.5 text-[9px] font-mono font-semibold text-brand-purple-soft">{ticket.reference}</span>
+                              <span className="min-w-0 flex-1 truncate text-[11px] font-medium text-brand-text">{ticket.subject}</span>
+                              <span className={`shrink-0 rounded border px-1 py-0.5 text-[8px] font-bold uppercase tracking-wider ${pStyle}`}>
+                                {ticket.priority}
+                              </span>
+                            </div>
+                          )
+                        })}
+                      </div>
+                    </div>
+                  )
+                })}
+
+                {/* Unassigned tasks & tickets (not linked to any employee) */}
+                {(() => {
+                  const ownerIds = new Set(productOwners.map(o => o.id))
+                  const unassignedTasks = activeTasks.filter(t => !t.assigned_to_id || !ownerIds.has(t.assigned_to_id))
+                  const unassignedTickets = activeTickets.filter(t => !t.assigned_to_id || !ownerIds.has(t.assigned_to_id))
+                  if (unassignedTasks.length === 0 && unassignedTickets.length === 0) return null
+
+                  const priorityColors: Record<string, string> = {
+                    critical: 'border-red-500/40 text-red-400',
+                    high: 'border-red-400/30 text-red-400',
+                    medium: 'border-amber-400/30 text-amber-400',
+                    low: 'border-sky-400/30 text-sky-400',
+                  }
+
+                  return (
+                    <div className="flex items-start gap-4 rounded-xl border border-brand-border/15 bg-brand-card/20 px-3.5 py-3">
+                      <div className="flex shrink-0 items-center gap-3" style={{ minWidth: '180px' }}>
+                        <div className="flex h-10 w-10 items-center justify-center rounded-full bg-brand-border/10 ring-2 ring-brand-border/20">
+                          <User size={16} className="text-brand-text-dim" />
+                        </div>
+                        <div className="flex flex-col gap-0.5">
+                          <span className="text-[12px] font-semibold leading-tight text-brand-text-dim">Unassigned</span>
+                          <span className="text-[10px] leading-tight text-brand-text-dim/60">No employee assigned</span>
+                        </div>
+                      </div>
+                      <div className="flex flex-1 flex-wrap items-center gap-1.5 overflow-hidden">
+                        {unassignedTasks.map(task => {
+                          const pStyle = priorityColors[task.priority] || 'border-brand-border/30 text-brand-text-dim'
+                          return (
+                            <div
+                              key={task.id}
+                              className="flex items-center gap-2 rounded-lg border border-brand-border/25 bg-brand-card/30 px-2.5 py-1.5"
+                              style={{ maxWidth: '280px' }}
+                            >
+                              {task.status === 'in_progress'
+                                ? <span className="inline-flex h-1.5 w-1.5 shrink-0 rounded-full bg-blue-400 animate-pulse" />
+                                : <span className="inline-flex h-1.5 w-1.5 shrink-0 rounded-full bg-brand-text-dim/40" />
+                              }
+                              <ListTodo size={10} className="shrink-0 text-brand-text-dim/60" />
+                              <span className="min-w-0 flex-1 truncate text-[11px] font-medium text-brand-text">{task.title}</span>
+                              <span className={`shrink-0 rounded border px-1 py-0.5 text-[8px] font-bold uppercase tracking-wider ${pStyle}`}>
+                                {task.priority}
+                              </span>
+                            </div>
+                          )
+                        })}
+                        {unassignedTickets.map(ticket => {
+                          const pStyle = priorityColors[ticket.priority] || 'border-brand-border/30 text-brand-text-dim'
+                          return (
+                            <div
+                              key={ticket.id}
+                              className="flex items-center gap-2 rounded-lg border border-brand-border/25 bg-brand-card/30 px-2.5 py-1.5"
+                              style={{ maxWidth: '280px' }}
+                            >
+                              <Ticket size={10} className="shrink-0 text-brand-purple-soft/60" />
+                              <span className="shrink-0 rounded bg-brand-purple/15 px-1 py-0.5 text-[9px] font-mono font-semibold text-brand-purple-soft">{ticket.reference}</span>
+                              <span className="min-w-0 flex-1 truncate text-[11px] font-medium text-brand-text">{ticket.subject}</span>
+                              <span className={`shrink-0 rounded border px-1 py-0.5 text-[8px] font-bold uppercase tracking-wider ${pStyle}`}>
+                                {ticket.priority}
+                              </span>
+                            </div>
+                          )
+                        })}
+                      </div>
+                    </div>
+                  )
+                })()}
+              </div>
+            )}
+          </div>
+        </div>
+      )}
 
       {/* Resizable two-pane layout */}
       <div className="flex-1 overflow-hidden">

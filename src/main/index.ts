@@ -582,6 +582,108 @@ ipcMain.handle('features:fetch', async (_event, workspaceId: string, projectId: 
   }
 })
 
+// Active tasks for a project (from task boards)
+ipcMain.handle('active-tasks:fetch', async (_event, workspaceId: string, projectId: string) => {
+  try {
+    const credentials = authStore.getCredentials()
+    if (!credentials) {
+      return { success: false, data: [], error: 'Not authenticated' }
+    }
+
+    const response = await fetch(
+      `${credentials.apiUrl}/api/workspaces/${workspaceId}/tasks?project_id=${projectId}`,
+      {
+        method: 'GET',
+        headers: {
+          'Accept': 'application/json',
+          'Authorization': `Bearer ${credentials.apiToken}`
+        }
+      }
+    )
+
+    if (!response.ok) {
+      return { success: false, data: [], error: `Failed to fetch tasks: ${response.statusText}` }
+    }
+
+    const data = await response.json()
+    return { success: true, data: data.tasks || [] }
+  } catch (error) {
+    return {
+      success: false,
+      data: [],
+      error: error instanceof Error ? error.message : 'Unknown error'
+    }
+  }
+})
+
+// Active tickets for a workspace (from service desks)
+ipcMain.handle('active-tickets:fetch', async (_event, workspaceId: string) => {
+  try {
+    const credentials = authStore.getCredentials()
+    if (!credentials) {
+      return { success: false, data: [], error: 'Not authenticated' }
+    }
+
+    const response = await fetch(
+      `${credentials.apiUrl}/api/workspaces/${workspaceId}/tickets`,
+      {
+        method: 'GET',
+        headers: {
+          'Accept': 'application/json',
+          'Authorization': `Bearer ${credentials.apiToken}`
+        }
+      }
+    )
+
+    if (!response.ok) {
+      return { success: false, data: [], error: `Failed to fetch tickets: ${response.statusText}` }
+    }
+
+    const data = await response.json()
+    return { success: true, data: data.tickets || [] }
+  } catch (error) {
+    return {
+      success: false,
+      data: [],
+      error: error instanceof Error ? error.message : 'Unknown error'
+    }
+  }
+})
+
+// Project product owners (digital employees)
+ipcMain.handle('product-owners:fetch', async (_event, workspaceId: string, projectId: string) => {
+  try {
+    const credentials = authStore.getCredentials()
+    if (!credentials) {
+      return { success: false, data: [], error: 'Not authenticated' }
+    }
+
+    const response = await fetch(
+      `${credentials.apiUrl}/api/workspaces/${workspaceId}/projects/${projectId}/product-owners`,
+      {
+        method: 'GET',
+        headers: {
+          'Accept': 'application/json',
+          'Authorization': `Bearer ${credentials.apiToken}`
+        }
+      }
+    )
+
+    if (!response.ok) {
+      return { success: false, data: [], error: `Failed to fetch product owners: ${response.statusText}` }
+    }
+
+    const data = await response.json()
+    return { success: true, data: data.product_owners || [] }
+  } catch (error) {
+    return {
+      success: false,
+      data: [],
+      error: error instanceof Error ? error.message : 'Unknown error'
+    }
+  }
+})
+
 // Download feature PRD to working directory
 ipcMain.handle('features:download-prd', async (_event, workspaceId: string, projectId: string, featureId: string, workingDirectory: string) => {
   try {

@@ -117,6 +117,16 @@ const api = {
   downloadFeaturePRD: (workspaceId: string, projectId: string, featureId: string, workingDirectory: string) =>
     ipcRenderer.invoke('features:download-prd', workspaceId, projectId, featureId, workingDirectory),
 
+  // Product Owners (digital employees)
+  fetchProductOwners: (workspaceId: string, projectId: string) =>
+    ipcRenderer.invoke('product-owners:fetch', workspaceId, projectId),
+
+  // Active tasks & tickets
+  fetchActiveTasks: (workspaceId: string, projectId: string) =>
+    ipcRenderer.invoke('active-tasks:fetch', workspaceId, projectId),
+  fetchActiveTickets: (workspaceId: string) =>
+    ipcRenderer.invoke('active-tickets:fetch', workspaceId),
+
   // User question responses
   respondToQuestion: (questionId: string, response: string) =>
     ipcRenderer.invoke('agent:respond-to-question', questionId, response),

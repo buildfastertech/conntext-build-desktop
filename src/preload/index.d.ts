@@ -206,6 +206,55 @@ export interface FeaturesResponse {
   error?: string
 }
 
+export interface ProductOwner {
+  id: string
+  name: string
+  profile_photo_url: string | null
+  gender: string
+  bio: string | null
+  job_description: string
+}
+
+export interface ProductOwnersResponse {
+  success: boolean
+  data: ProductOwner[]
+  error?: string
+}
+
+export interface ActiveTask {
+  id: string
+  title: string
+  project_id: string | null
+  project_name: string | null
+  status: string
+  priority: string
+  assigned_to_id: string | null
+  assigned_to_name: string | null
+}
+
+export interface ActiveTasksResponse {
+  success: boolean
+  data: ActiveTask[]
+  error?: string
+}
+
+export interface ActiveTicket {
+  id: string
+  reference: string
+  subject: string
+  service_desk_id: string
+  service_desk_name: string | null
+  priority: string
+  assigned_to_id: string | null
+  assigned_to_name: string | null
+}
+
+export interface ActiveTicketsResponse {
+  success: boolean
+  data: ActiveTicket[]
+  error?: string
+}
+
 export interface ElectronAPI {
   // Auth
   getCredentials: () => Promise<StoredCredentials | null>
@@ -299,6 +348,13 @@ export interface ElectronAPI {
   // Features
   fetchFeatures: (workspaceId: string, projectId: string) => Promise<FeaturesResponse>
   downloadFeaturePRD: (workspaceId: string, projectId: string, featureId: string, workingDirectory: string) => Promise<{ success: boolean; path?: string; error?: string }>
+
+  // Product Owners
+  fetchProductOwners: (workspaceId: string, projectId: string) => Promise<ProductOwnersResponse>
+
+  // Active tasks & tickets
+  fetchActiveTasks: (workspaceId: string, projectId: string) => Promise<ActiveTasksResponse>
+  fetchActiveTickets: (workspaceId: string) => Promise<ActiveTicketsResponse>
 
   // User question responses
   respondToQuestion: (questionId: string, response: string) => Promise<{ success: boolean }>
