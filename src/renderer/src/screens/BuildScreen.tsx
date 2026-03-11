@@ -3406,7 +3406,7 @@ You MUST focus your work within these folders. When reading, writing, editing, o
       />
 
       {/* Active Tasks panel */}
-      {selectedProject && (productOwners.length > 0 || activeTasks.length > 0 || activeTickets.length > 0) && (
+      {selectedProject && productOwners.length > 0 && (
         <div className="border-b border-brand-border/40" style={{ background: 'linear-gradient(135deg, rgba(20,20,24,0.97) 0%, rgba(16,16,20,0.99) 100%)' }}>
           <div className="px-4 py-2">
             {/* Panel header — always visible */}
@@ -3559,73 +3559,6 @@ You MUST focus your work within these folders. When reading, writing, editing, o
                   )
                 })}
 
-                {/* Unassigned tasks & tickets (not linked to any employee) */}
-                {(() => {
-                  const ownerIds = new Set(productOwners.map(o => o.id))
-                  const unassignedTasks = activeTasks.filter(t => !t.assigned_to_id || !ownerIds.has(t.assigned_to_id))
-                  const unassignedTickets = activeTickets.filter(t => !t.assigned_to_id || !ownerIds.has(t.assigned_to_id))
-                  if (unassignedTasks.length === 0 && unassignedTickets.length === 0) return null
-
-                  const priorityColors: Record<string, string> = {
-                    critical: 'border-red-500/40 text-red-400',
-                    high: 'border-red-400/30 text-red-400',
-                    medium: 'border-amber-400/30 text-amber-400',
-                    low: 'border-sky-400/30 text-sky-400',
-                  }
-
-                  return (
-                    <div className="flex items-start gap-4 rounded-xl border border-brand-border/15 bg-brand-card/20 px-3.5 py-3">
-                      <div className="flex shrink-0 items-center gap-3" style={{ minWidth: '180px' }}>
-                        <div className="flex h-10 w-10 items-center justify-center rounded-full bg-brand-border/10 ring-2 ring-brand-border/20">
-                          <User size={16} className="text-brand-text-dim" />
-                        </div>
-                        <div className="flex flex-col gap-0.5">
-                          <span className="text-[12px] font-semibold leading-tight text-brand-text-dim">Unassigned</span>
-                          <span className="text-[10px] leading-tight text-brand-text-dim/60">No employee assigned</span>
-                        </div>
-                      </div>
-                      <div className="flex flex-1 flex-wrap items-center gap-1.5 overflow-hidden">
-                        {unassignedTasks.map(task => {
-                          const pStyle = priorityColors[task.priority] || 'border-brand-border/30 text-brand-text-dim'
-                          return (
-                            <div
-                              key={task.id}
-                              className="flex items-center gap-2 rounded-lg border border-brand-border/25 bg-brand-card/30 px-2.5 py-1.5"
-                              style={{ maxWidth: '280px' }}
-                            >
-                              {task.status === 'in_progress'
-                                ? <span className="inline-flex h-1.5 w-1.5 shrink-0 rounded-full bg-blue-400 animate-pulse" />
-                                : <span className="inline-flex h-1.5 w-1.5 shrink-0 rounded-full bg-brand-text-dim/40" />
-                              }
-                              <ListTodo size={10} className="shrink-0 text-brand-text-dim/60" />
-                              <span className="min-w-0 flex-1 truncate text-[11px] font-medium text-brand-text">{task.title}</span>
-                              <span className={`shrink-0 rounded border px-1 py-0.5 text-[8px] font-bold uppercase tracking-wider ${pStyle}`}>
-                                {task.priority}
-                              </span>
-                            </div>
-                          )
-                        })}
-                        {unassignedTickets.map(ticket => {
-                          const pStyle = priorityColors[ticket.priority] || 'border-brand-border/30 text-brand-text-dim'
-                          return (
-                            <div
-                              key={ticket.id}
-                              className="flex items-center gap-2 rounded-lg border border-brand-border/25 bg-brand-card/30 px-2.5 py-1.5"
-                              style={{ maxWidth: '280px' }}
-                            >
-                              <Ticket size={10} className="shrink-0 text-brand-purple-soft/60" />
-                              <span className="shrink-0 rounded bg-brand-purple/15 px-1 py-0.5 text-[9px] font-mono font-semibold text-brand-purple-soft">{ticket.reference}</span>
-                              <span className="min-w-0 flex-1 truncate text-[11px] font-medium text-brand-text">{ticket.subject}</span>
-                              <span className={`shrink-0 rounded border px-1 py-0.5 text-[8px] font-bold uppercase tracking-wider ${pStyle}`}>
-                                {ticket.priority}
-                              </span>
-                            </div>
-                          )
-                        })}
-                      </div>
-                    </div>
-                  )
-                })()}
               </div>
             )}
           </div>
