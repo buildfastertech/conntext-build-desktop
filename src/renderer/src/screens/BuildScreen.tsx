@@ -2,6 +2,7 @@ import { useState, useRef, useEffect, useCallback, memo } from 'react'
 import { flushSync } from 'react-dom'
 import ReactMarkdown from 'react-markdown'
 import remarkGfm from 'remark-gfm'
+import { toast } from 'sonner'
 import { FolderOpen, Pencil, Check, X, ChevronDown, RefreshCw, AlertCircle, Layers, Blocks, Lightbulb, Users, Heart, TrendingUp, DollarSign, Cpu, Palette, Link2, Cog, MessageSquare, Hammer } from 'lucide-react'
 import type { StreamEvent, UserInfo, SessionMetadata, Turn, ToolEvent, Workspace, UserQuestion, Project, ProjectFeature } from '../../../preload/index.d'
 import { ResizablePanes } from '../components/ResizablePanes'
@@ -2659,45 +2660,76 @@ You MUST focus your work within these folders. When reading, writing, editing, o
                         Discuss
                       </button>
                       <button
-                        onClick={(e) => {
+                        onClick={async (e) => {
                           e.stopPropagation()
-                          const slug = feature.title.toLowerCase().replace(/[^a-z0-9]+/g, '-').replace(/^-|-$/g, '')
-                          const prdPath = `docs/features/${slug}-prd.md`
-                          const featureData = [
-                            `**Title:** ${feature.title}`,
-                            feature.description ? `**Description:** ${feature.description}` : '',
-                            feature.content ? `**Feature Content:**\n${feature.content}` : '',
-                            feature.prd_summary ? `**PRD Summary:**\n${feature.prd_summary}` : '',
-                            feature.spec ? `**Spec:**\n${feature.spec}` : '',
-                          ].filter(Boolean).join('\n\n')
 
-                          const prompt = `Build feature from PRD: "${feature.title}"
-
-Here is all the feature data from ConnText:
-
-${featureData}
-
-**INSTRUCTIONS — Follow these steps in order:**
-
-**Step 1: Create PRD document (if it doesn't exist)**
-Check if the file \`${prdPath}\` exists in the working directory.
-- If it does NOT exist:
-  1. Create the \`docs/features/\` directory structure if needed
-  2. Write a comprehensive, well-structured PRD markdown document at \`${prdPath}\`
-  3. The PRD MUST include an \`## Implementation Tasks\` section with checkbox items (\`- [ ]\`) covering all implementation work
-  4. Derive implementation tasks from all the feature data provided above
-  5. Include clear subtasks under each main task (indented with 2 spaces: \`  - [ ]\`)
-  6. Include a feature overview, user stories, and acceptance criteria sections before the implementation tasks
-- If it already exists, skip to Step 2
-
-**Step 2: Run Feature Build**
-Once the PRD file exists, run the skill:
-/conntext-feature-build ${prdPath}`
+                          if (!activeWorkspaceProp || !selectedProject || !workingDirectory) {
+                            toast.error('Missing workspace, project, or working directory')
+                            return
+                          }
 
                           const displayMsg = `🔨 Building feature: **${feature.title}**`
+                          const turnId = crypto.randomUUID()
+                          const newTurn: Turn = {
+                            id: turnId,
+                            userMessage: displayMsg,
+                            textBlocks: [],
+                            toolEvents: [],
+                            isComplete: false,
+                            startTime: Date.now(),
+                            endTime: null,
+                            costUsd: null,
+                          }
+                          setTurns((prev) => [...prev, newTurn])
+
+                          // Download PRD from ConnText
+                          const result = await window.api.downloadFeaturePRD(
+                            activeWorkspaceProp.id,
+                            selectedProject.id,
+                            feature.id,
+                            workingDirectory
+                          )
+
+                          if (!result.success || !result.path) {
+                            const errorMsg = result.error || 'Failed to download PRD'
+                            setTurns((prev) =>
+                              prev.map((t) =>
+                                t.id === turnId
+                                  ? {
+                                      ...t,
+                                      textBlocks: [`❌ ${errorMsg}`],
+                                      isComplete: true,
+                                      endTime: Date.now(),
+                                    }
+                                  : t
+                              )
+                            )
+                            toast.error(errorMsg)
+                            return
+                          }
+
+                          // Update turn with success message
+                          setTurns((prev) =>
+                            prev.map((t) =>
+                              t.id === turnId
+                                ? {
+                                    ...t,
+                                    textBlocks: [`✅ PRD downloaded to \`${result.path}\`\n\nStarting build...`],
+                                  }
+                                : t
+                            )
+                          )
+
+                          // Run the build with downloaded PRD
+                          const prompt = `/conntext-feature-build ${result.path}`
                           handleSend(prompt, displayMsg)
                         }}
-                        className="inline-flex cursor-pointer items-center gap-1.5 rounded-md border border-emerald-500/30 bg-transparent px-2 py-1 text-[10px] font-medium text-emerald-400 transition-colors hover:border-emerald-500/50 hover:bg-emerald-500/10"
+                        disabled={feature.prd_summary_status !== 'generated'}
+                        className={`inline-flex cursor-pointer items-center gap-1.5 rounded-md border px-2 py-1 text-[10px] font-medium transition-colors ${
+                          feature.prd_summary_status === 'generated'
+                            ? 'border-emerald-500/30 bg-transparent text-emerald-400 hover:border-emerald-500/50 hover:bg-emerald-500/10'
+                            : 'cursor-not-allowed border-brand-border/30 bg-transparent text-brand-text-dim/40 opacity-50'
+                        }`}
                       >
                         <Hammer size={11} />
                         Build
@@ -2712,7 +2744,7 @@ Once the PRD file exists, run the skill:
                         {children.map((child) => {
                           const childCat = getCategoryColor(child.brainstorm_category)
                           return (
-                            <div key={child.id} className="rounded-md px-2 py-1">
+                            <div key={child.id} className="rounded-md bg-brand-card/20 px-2 py-1.5">
                               <div className="flex items-center gap-2">
                                 <span className="shrink-0">{childCat.icon}</span>
                                 <span className="min-w-0 flex-1 truncate text-[11px] text-brand-text-secondary">
@@ -2720,7 +2752,7 @@ Once the PRD file exists, run the skill:
                                 </span>
                                 {getStatusBadge(child.status)}
                               </div>
-                              <div className="mt-0.5 pl-[21px]">
+                              <div className="mt-0.5 pl-[21px] flex items-center gap-1.5">
                                 {child.prd_summary_status === 'generated' ? (
                                   <span className="text-[9px] font-medium text-emerald-400/50">PRD Generated</span>
                                 ) : child.prd_summary_status === 'generating' ? (
@@ -2728,6 +2760,96 @@ Once the PRD file exists, run the skill:
                                 ) : (
                                   <span className="text-[9px] font-medium text-brand-text-dim/30">No PRD</span>
                                 )}
+                              </div>
+                              {/* Discuss & Build buttons for child features */}
+                              <div className="mt-1.5 pl-[21px] flex gap-1.5">
+                                <button
+                                  onClick={(e) => {
+                                    e.stopPropagation()
+                                    const prompt = `I'd like to discuss the feature: "${child.title}"${child.description ? `\n\nDescription:\n${child.description}` : ''}${child.content ? `\n\nFeature Content:\n${child.content}` : ''}\n\nBased ONLY on the title, description, and content above, identify what's unclear or missing to fully scope this feature. Focus on:\n- Unclear requirements or ambiguous wording\n- Missing acceptance criteria\n- Undefined user flows or interactions\n- Technical decisions that need input\n\nDo NOT search the codebase, read files, or explore anything. Work solely from the information provided above.\n\nYou MUST use the mcp__customTools__ask_user tool to present your questions to me interactively. Group related questions together and provide options where appropriate. After I answer, summarise the refined feature scope.`
+                                    const displayMsg = `💬 Discussing feature: **${child.title}**`
+                                    handleSend(prompt, displayMsg)
+                                  }}
+                                  className="inline-flex cursor-pointer items-center gap-1.5 rounded-md border border-brand-purple/30 bg-transparent px-2 py-0.5 text-[9px] font-medium text-brand-purple-soft transition-colors hover:border-brand-purple/50 hover:bg-brand-purple/10"
+                                >
+                                  <MessageSquare size={10} />
+                                  Discuss
+                                </button>
+                                <button
+                                  onClick={async (e) => {
+                                    e.stopPropagation()
+
+                                    if (!activeWorkspaceProp || !selectedProject || !workingDirectory) {
+                                      toast.error('Missing workspace, project, or working directory')
+                                      return
+                                    }
+
+                                    const displayMsg = `🔨 Building feature: **${child.title}**`
+                                    const turnId = crypto.randomUUID()
+                                    const newTurn: Turn = {
+                                      id: turnId,
+                                      userMessage: displayMsg,
+                                      textBlocks: [],
+                                      toolEvents: [],
+                                      isComplete: false,
+                                      startTime: Date.now(),
+                                      endTime: null,
+                                      costUsd: null,
+                                    }
+                                    setTurns((prev) => [...prev, newTurn])
+
+                                    // Download PRD from ConnText
+                                    const result = await window.api.downloadFeaturePRD(
+                                      activeWorkspaceProp.id,
+                                      selectedProject.id,
+                                      child.id,
+                                      workingDirectory
+                                    )
+
+                                    if (!result.success || !result.path) {
+                                      const errorMsg = result.error || 'Failed to download PRD'
+                                      setTurns((prev) =>
+                                        prev.map((t) =>
+                                          t.id === turnId
+                                            ? {
+                                                ...t,
+                                                textBlocks: [`❌ ${errorMsg}`],
+                                                isComplete: true,
+                                                endTime: Date.now(),
+                                              }
+                                            : t
+                                        )
+                                      )
+                                      toast.error(errorMsg)
+                                      return
+                                    }
+
+                                    // Update turn with success message
+                                    setTurns((prev) =>
+                                      prev.map((t) =>
+                                        t.id === turnId
+                                          ? {
+                                              ...t,
+                                              textBlocks: [`✅ PRD downloaded to \`${result.path}\`\n\nStarting build...`],
+                                            }
+                                          : t
+                                      )
+                                    )
+
+                                    // Run the build with downloaded PRD
+                                    const prompt = `/conntext-feature-build ${result.path}`
+                                    handleSend(prompt, displayMsg)
+                                  }}
+                                  disabled={child.prd_summary_status !== 'generated'}
+                                  className={`inline-flex cursor-pointer items-center gap-1.5 rounded-md border px-2 py-0.5 text-[9px] font-medium transition-colors ${
+                                    child.prd_summary_status === 'generated'
+                                      ? 'border-emerald-500/30 bg-transparent text-emerald-400 hover:border-emerald-500/50 hover:bg-emerald-500/10'
+                                      : 'cursor-not-allowed border-brand-border/30 bg-transparent text-brand-text-dim/40 opacity-50'
+                                  }`}
+                                >
+                                  <Hammer size={10} />
+                                  Build
+                                </button>
                               </div>
                             </div>
                           )

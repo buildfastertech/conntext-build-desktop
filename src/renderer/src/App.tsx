@@ -1,4 +1,5 @@
 import { useEffect, useState } from 'react'
+import { Toaster } from 'sonner'
 import type { UserInfo, Project, Workspace } from '../../preload/index.d'
 import { LoginScreen } from './screens/LoginScreen'
 import { SetupScreen } from './screens/SetupScreen'
@@ -306,6 +307,7 @@ export function App() {
           onSwitchWorkspace={handleSwitchWorkspace}
         />
       </div>
+      <Toaster position="bottom-right" />
     </div>
   )
 }

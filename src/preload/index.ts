@@ -114,6 +114,8 @@ const api = {
   // Features
   fetchFeatures: (workspaceId: string, projectId: string) =>
     ipcRenderer.invoke('features:fetch', workspaceId, projectId),
+  downloadFeaturePRD: (workspaceId: string, projectId: string, featureId: string, workingDirectory: string) =>
+    ipcRenderer.invoke('features:download-prd', workspaceId, projectId, featureId, workingDirectory),
 
   // User question responses
   respondToQuestion: (questionId: string, response: string) =>

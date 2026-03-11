@@ -298,6 +298,7 @@ export interface ElectronAPI {
 
   // Features
   fetchFeatures: (workspaceId: string, projectId: string) => Promise<FeaturesResponse>
+  downloadFeaturePRD: (workspaceId: string, projectId: string, featureId: string, workingDirectory: string) => Promise<{ success: boolean; path?: string; error?: string }>
 
   // User question responses
   respondToQuestion: (questionId: string, response: string) => Promise<{ success: boolean }>

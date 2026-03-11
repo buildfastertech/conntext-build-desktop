@@ -1,5 +1,7 @@
 import { app, BrowserWindow, ipcMain, dialog, Menu } from 'electron'
 import { join } from 'path'
+import * as path from 'path'
+import * as fs from 'fs'
 import { readFile, writeFile, mkdir, readdir, unlink, cp, stat } from 'fs/promises'
 import { existsSync } from 'fs'
 import { homedir } from 'os'
@@ -575,6 +577,70 @@ ipcMain.handle('features:fetch', async (_event, workspaceId: string, projectId: 
     return {
       success: false,
       data: [],
+      error: error instanceof Error ? error.message : 'Unknown error'
+    }
+  }
+})
+
+// Download feature PRD to working directory
+ipcMain.handle('features:download-prd', async (_event, workspaceId: string, projectId: string, featureId: string, workingDirectory: string) => {
+  try {
+    const credentials = authStore.getCredentials()
+    if (!credentials) {
+      return { success: false, error: 'Not authenticated' }
+    }
+
+    // Fetch all features for the project
+    const response = await fetch(
+      `${credentials.apiUrl}/api/workspaces/${workspaceId}/projects/${projectId}/features`,
+      {
+        method: 'GET',
+        headers: {
+          'Accept': 'application/json',
+          'Authorization': `Bearer ${credentials.apiToken}`
+        }
+      }
+    )
+
+    if (!response.ok) {
+      return { success: false, error: `Failed to fetch features: ${response.statusText}` }
+    }
+
+    const data = await response.json()
+    const features = data.features || []
+
+    // Find the specific feature
+    const feature = features.find((f: any) => f.id === featureId)
+
+    if (!feature) {
+      return { success: false, error: 'Feature not found' }
+    }
+
+    if (!feature.prd_summary || feature.prd_summary_status !== 'generated') {
+      return { success: false, error: 'PRD not available for this feature' }
+    }
+
+    // Create .context/feature directory if it doesn't exist
+    const contextDir = path.join(workingDirectory, '.context', 'feature')
+    if (!fs.existsSync(contextDir)) {
+      fs.mkdirSync(contextDir, { recursive: true })
+    }
+
+    // Generate filename from feature title
+    const slug = feature.title.toLowerCase().replace(/[^a-z0-9]+/g, '-').replace(/^-|-$/g, '')
+    const filename = `${slug}-prd.md`
+    const filePath = path.join(contextDir, filename)
+
+    // Write PRD content to file
+    fs.writeFileSync(filePath, feature.prd_summary, 'utf8')
+
+    // Return relative path from working directory
+    const relativePath = path.relative(workingDirectory, filePath).replace(/\\/g, '/')
+
+    return { success: true, path: relativePath }
+  } catch (error) {
+    return {
+      success: false,
       error: error instanceof Error ? error.message : 'Unknown error'
     }
   }
