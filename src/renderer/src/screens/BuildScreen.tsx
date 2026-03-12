@@ -504,6 +504,7 @@ export function BuildScreen({ user, onLogout, workingDirectory: initialWorkingDi
       const sessionData = {
         sessionId: sessionIdRef.current,
         projectId: projectIdRef.current,
+        featureId: activeFeatureIdRef.current ?? null,
         title: currentSessionTitleRef.current || allTurns[0]?.userMessage?.slice(0, 50) || 'Untitled Session',
         timestamp: allTurns[0]?.startTime || Date.now(),
         endTime: Date.now(),
@@ -1462,6 +1463,7 @@ This file stores important context and information for the AI agent.
           const sessionData = {
             sessionId,
             projectId: projectId ?? null,
+            featureId: activeFeatureIdRef.current ?? null,
             title: currentSessionTitle || turns[0]?.userMessage?.slice(0, 50) || newTurn.userMessage.slice(0, 50) || 'Untitled Session',
             timestamp: turns[0]?.startTime || Date.now(),
             endTime: Date.now(),
@@ -1591,6 +1593,7 @@ This file stores important context and information for the AI agent.
           const sessionData = {
             sessionId,
             projectId: projectId ?? null,
+            featureId: activeFeatureIdRef.current ?? null,
             title: currentSessionTitle || turns[0]?.userMessage?.slice(0, 50) || newTurn.userMessage.slice(0, 50) || 'Untitled Session',
             timestamp: turns[0]?.startTime || Date.now(),
             endTime: Date.now(),

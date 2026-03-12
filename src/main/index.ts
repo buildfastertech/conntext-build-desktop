@@ -5,7 +5,7 @@ import * as fs from 'fs'
 import { readFile, writeFile, mkdir, readdir, unlink, cp, stat } from 'fs/promises'
 import { existsSync } from 'fs'
 import { homedir } from 'os'
-import { AgentService } from './agent-service'
+import { AgentService, type SessionSaveData } from './agent-service'
 import { AuthStore } from './auth-store'
 import { AppStateStore } from './app-state-store'
 import { SkillsStore } from './skills-store'
@@ -18,6 +18,13 @@ const authStore = new AuthStore()
 const appStateStore = new AppStateStore()
 const skillsStore = new SkillsStore()
 // webSocketService removed — Pusher.js now runs in the renderer process
+
+// Wire up auto-save → server sync: every time AgentService auto-saves to disk, sync to server
+agentService.setOnSessionSaved((data) => {
+  if (data.projectId) {
+    syncToServer({ ...data, projectId: data.projectId })
+  }
+})
 
 /**
  * Get the path to the local skills cache directory.
@@ -878,9 +885,63 @@ function getSessionsDir(workingDirectory: string, projectId?: string | null): st
   return join(workingDirectory, '.conntext', 'sessions')
 }
 
+// Sync session to server on every disk save (fire-and-forget)
+function syncToServer(sessionData: {
+  sessionId: string
+  projectId: string
+  featureId?: string | null
+  title: string
+  timestamp: number
+  endTime: number | null
+  workingDirectory: string
+  turns: unknown[]
+  totalCost: number
+}): void {
+  const credentials = authStore.getCredentials()
+  if (!credentials) return
+
+  const syncStartedAt = Date.now()
+  console.log(`[SessionSync] → START sync for session: ${sessionData.sessionId} (turns: ${(sessionData.turns as unknown[]).length}, cost: ${sessionData.totalCost})`)
+
+  fetch(`${credentials.apiUrl}/api/agent-sessions/sync`, {
+    method: 'POST',
+    headers: {
+      'Accept': 'application/json',
+      'Content-Type': 'application/json',
+      'Authorization': `Bearer ${credentials.apiToken}`
+    },
+    body: JSON.stringify({
+      session_id: sessionData.sessionId,
+      project_id: sessionData.projectId,
+      feature_id: sessionData.featureId ?? null,
+      data: {
+        title: sessionData.title,
+        timestamp: sessionData.timestamp,
+        endTime: sessionData.endTime,
+        workingDirectory: sessionData.workingDirectory,
+        turns: sessionData.turns,
+        totalCost: sessionData.totalCost
+      }
+    })
+  })
+    .then(res => {
+      const elapsed = Date.now() - syncStartedAt
+      if (res.ok) {
+        console.log(`[SessionSync] ✓ DONE  sync for session: ${sessionData.sessionId} (${elapsed}ms)`)
+      } else {
+        console.warn(`[SessionSync] ✗ FAIL  sync for session: ${sessionData.sessionId} — server returned ${res.status} (${elapsed}ms)`)
+      }
+    })
+    .catch(err => {
+      const elapsed = Date.now() - syncStartedAt
+      console.warn(`[SessionSync] ✗ ERROR sync for session: ${sessionData.sessionId} — ${err.message} (${elapsed}ms)`)
+    })
+}
+
 ipcMain.handle('session:save', async (_event, sessionData: {
   sessionId: string
   projectId?: string | null
+  featureId?: string | null
   title: string
   timestamp: number
   endTime: number | null
@@ -899,6 +960,11 @@ ipcMain.handle('session:save', async (_event, sessionData: {
     // Save session file
     const sessionFile = join(sessionsDir, `${sessionData.sessionId}.json`)
     await writeFile(sessionFile, JSON.stringify(sessionData, null, 2), 'utf-8')
+
+    // Sync to server (fire-and-forget) on every disk save when a project is selected
+    if (sessionData.projectId) {
+      syncToServer({ ...sessionData, projectId: sessionData.projectId })
+    }
 
     return { success: true }
   } catch (error) {

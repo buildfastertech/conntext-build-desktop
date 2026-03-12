@@ -5,6 +5,8 @@ import { execSync } from 'child_process'
 import { writeFile, mkdir } from 'fs/promises'
 import { existsSync } from 'fs'
 import { join } from 'path'
+import https from 'https'
+import http from 'http'
 import { VisionService } from './vision-service'
 import { customToolsServer } from './tools'
 import { setQuestionNotifier } from './tools/ask-user'
@@ -136,6 +138,8 @@ interface SessionMeta {
   title: string
   timestamp: number
   completedTurns: ActiveTurn[]
+  projectId?: string | null
+  featureId?: string | null
 }
 
 interface Session {
@@ -164,10 +168,39 @@ interface Session {
 
 const DEFAULT_TOOLS = ['Read', 'Write', 'Edit', 'Glob', 'Grep', 'Bash', 'mcp__customTools__code_review', 'mcp__customTools__ask_user']
 
+export interface AuthProvider {
+  getApiUrl(): string | null
+  getApiToken(): string | null
+}
+
+export interface SessionSaveData {
+  sessionId: string
+  sdkSessionId?: string | null
+  projectId: string | null
+  featureId: string | null
+  title: string
+  timestamp: number
+  endTime: number | null
+  workingDirectory: string
+  turns: unknown[]
+  totalCost: number
+}
+
 export class AgentService {
   private sessions = new Map<string, Session>()
   private visionService: VisionService | null = null
   private customClaudeCodePath: string | null = null
+  private authProvider: AuthProvider | null = null
+  /** Callback invoked after every auto-save to disk — used for server sync */
+  private onSessionSaved: ((data: SessionSaveData) => void) | null = null
+
+  setOnSessionSaved(callback: (data: SessionSaveData) => void): void {
+    this.onSessionSaved = callback
+  }
+
+  setAuthProvider(provider: AuthProvider): void {
+    this.authProvider = provider
+  }
 
   initializeVisionService(apiKey: string) {
     this.visionService = new VisionService(apiKey)
@@ -331,6 +364,10 @@ export class AgentService {
       turnId?: string
       /** Session title from the renderer */
       sessionTitle?: string
+      /** Project ID for server sync */
+      projectId?: string | null
+      /** Feature ID for server sync */
+      featureId?: string | null
       previousTurns?: Array<{
         id: string
         userMessage: string
@@ -501,12 +538,21 @@ Please proceed to complete the user's request using the appropriate tools.`
       session.meta = {
         title: params.sessionTitle || params.content.slice(0, 50) || 'Untitled Session',
         timestamp: Date.now(),
-        completedTurns: (params.previousTurns || []) as ActiveTurn[]
+        completedTurns: (params.previousTurns || []) as ActiveTurn[],
+        projectId: params.projectId || null,
+        featureId: params.featureId || null
       }
     } else {
       // Update title if provided
       if (params.sessionTitle) {
         session.meta.title = params.sessionTitle
+      }
+      // Update project/feature IDs if provided
+      if (params.projectId !== undefined) {
+        session.meta.projectId = params.projectId
+      }
+      if (params.featureId !== undefined) {
+        session.meta.featureId = params.featureId
       }
       // Sync completed turns from renderer (in case of reconnect)
       if (params.previousTurns) {
@@ -1047,9 +1093,14 @@ Please proceed to complete the user's request using the appropriate tools.`
       allTurns.push({ ...session.activeTurn })
     }
 
-    const sessionData = {
+    const projectId = session.meta.projectId || null
+    const featureId = session.meta.featureId || null
+
+    const sessionData: SessionSaveData = {
       sessionId: session.id,
       sdkSessionId: session.sdkSessionId,
+      projectId,
+      featureId,
       title: session.meta.title,
       timestamp: session.meta.timestamp,
       endTime: Date.now(),
@@ -1059,13 +1110,21 @@ Please proceed to complete the user's request using the appropriate tools.`
     }
 
     try {
-      const sessionsDir = join(session.config.workingDirectory, '.conntext', 'sessions')
+      // Write to project-scoped directory when projectId is set
+      const sessionsDir = projectId
+        ? join(session.config.workingDirectory, '.conntext', 'sessions', projectId)
+        : join(session.config.workingDirectory, '.conntext', 'sessions')
       if (!existsSync(sessionsDir)) {
         await mkdir(sessionsDir, { recursive: true })
       }
       const sessionFile = join(sessionsDir, `${session.id}.json`)
       await writeFile(sessionFile, JSON.stringify(sessionData, null, 2), 'utf-8')
       console.log('[AgentService] Auto-saved session to disk:', session.id)
+
+      // Notify callback (used by index.ts to sync to server)
+      if (this.onSessionSaved) {
+        this.onSessionSaved(sessionData)
+      }
     } catch (error) {
       console.error('[AgentService] Failed to auto-save session:', error)
     }
