@@ -948,6 +948,8 @@ ipcMain.handle('session:list', async (_event, workingDirectory: string, projectI
           sessions.push({
             sessionId: session.sessionId,
             projectId: session.projectId || null,
+            featureId: session.featureId || null,
+            featureTitle: session.featureTitle || null,
             title: session.title,
             timestamp: session.timestamp,
             endTime: session.endTime,
