@@ -88,6 +88,10 @@ export function BuildScreen({ user, onLogout, workingDirectory: initialWorkingDi
   const [selectedFileIndex, setSelectedFileIndex] = useState(0)
   const fileSearchTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null)
 
+  const [activeFeatureId, setActiveFeatureId] = useState<string | null>(null)
+  const [activeFeatureTitle, setActiveFeatureTitle] = useState<string | null>(null)
+  const activeFeatureIdRef = useRef<string | null>(null)
+
   const [projectFeatures, setProjectFeatures] = useState<ProjectFeature[]>([])
   const [isFeaturesLoading, setIsFeaturesLoading] = useState(false)
   const [featuresError, setFeaturesError] = useState<string | null>(null)
@@ -186,6 +190,11 @@ export function BuildScreen({ user, onLogout, workingDirectory: initialWorkingDi
     projectIdRef.current = projectId ?? null
   }, [projectId])
 
+  // Keep activeFeatureIdRef in sync with activeFeatureId
+  useEffect(() => {
+    activeFeatureIdRef.current = activeFeatureId
+  }, [activeFeatureId])
+
   // Keep currentSessionTitleRef in sync with currentSessionTitle state
   useEffect(() => {
     currentSessionTitleRef.current = currentSessionTitle
@@ -220,6 +229,9 @@ export function BuildScreen({ user, onLogout, workingDirectory: initialWorkingDi
     setCurrentSessionTitle('')
     setSessions([])
     setContextTokens(0)
+    setActiveFeatureId(null)
+    setActiveFeatureTitle(null)
+    activeFeatureIdRef.current = null
     activeTurnIdRef.current = null
     sessionIdRef.current = null
     sdkSessionIdRef.current = null
@@ -307,6 +319,8 @@ export function BuildScreen({ user, onLogout, workingDirectory: initialWorkingDi
               setSessionId(sessionData.sessionId)
               setSdkSessionId(sessionData.sdkSessionId ?? null)
               setCurrentSessionTitle(sessionData.title)
+              setActiveFeatureId(sessionData.featureId ?? null)
+              setActiveFeatureTitle(sessionData.featureTitle ?? null)
 
               // Check if there's an incomplete turn we should reconnect to
               const storedActiveTurnId = localStorage.getItem('activeTurnId')
@@ -1728,6 +1742,8 @@ You MUST focus your work within these folders. When reading, writing, editing, o
       const sessionData = {
         sessionId: currentSessionId,
         projectId: projectId ?? null,
+        featureId: activeFeatureIdRef.current ?? null,
+        featureTitle: activeFeatureTitle ?? null,
         title: currentSessionTitle || turns[0]?.userMessage?.slice(0, 50) || newTurn.userMessage.slice(0, 50) || 'Untitled Session',
         timestamp: turns[0]?.startTime || Date.now(),
         endTime: Date.now(),
@@ -1913,6 +1929,8 @@ You MUST focus your work within these folders. When reading, writing, editing, o
       sessionId,
       sdkSessionId,
       projectId: projectId ?? null,
+      featureId: activeFeatureIdRef.current ?? null,
+      featureTitle: activeFeatureTitle ?? null,
       title: sessionTitle,
       timestamp: turns[0]?.startTime || Date.now(),
       endTime: Date.now(),
@@ -1978,6 +1996,8 @@ You MUST focus your work within these folders. When reading, writing, editing, o
       setSessionId(sessionData.sessionId)
       setSdkSessionId(sessionData.sdkSessionId ?? null)
       setCurrentSessionTitle(sessionData.title)
+      setActiveFeatureId(sessionData.featureId ?? null)
+      setActiveFeatureTitle(sessionData.featureTitle ?? null)
 
       // Check if this session has an incomplete turn that's still running
       const incompleteTurn = sessionData.turns.find((t: Turn) => !t.isComplete)
@@ -2031,6 +2051,10 @@ You MUST focus your work within these folders. When reading, writing, editing, o
     setCurrentSessionTitle('')
     setPastedImages([])
     setInput('')
+    // Clear feature context — new session only links to project
+    setActiveFeatureId(null)
+    setActiveFeatureTitle(null)
+    activeFeatureIdRef.current = null
     // Clear refs immediately so a quick follow-up message doesn't resume the old session
     sessionIdRef.current = null
     sdkSessionIdRef.current = null
@@ -2869,6 +2893,8 @@ You MUST focus your work within these folders. When reading, writing, editing, o
                       <button
                         onClick={(e) => {
                           e.stopPropagation()
+                          setActiveFeatureId(feature.id)
+                          setActiveFeatureTitle(feature.title)
                           const prompt = `I'd like to discuss the feature: "${feature.title}"${feature.description ? `\n\nDescription:\n${feature.description}` : ''}${feature.content ? `\n\nFeature Content:\n${feature.content}` : ''}\n\nBased ONLY on the title, description, and content above, identify what's unclear or missing to fully scope this feature. Focus on:\n- Unclear requirements or ambiguous wording\n- Missing acceptance criteria\n- Undefined user flows or interactions\n- Technical decisions that need input\n\nDo NOT search the codebase, read files, or explore anything. Work solely from the information provided above.\n\nYou MUST use the mcp__customTools__ask_user tool to present your questions to me interactively. Group related questions together and provide options where appropriate. After I answer, summarise the refined feature scope.`
                           const displayMsg = `💬 Discussing feature: **${feature.title}**`
                           handleSend(prompt, displayMsg)
@@ -2886,6 +2912,9 @@ You MUST focus your work within these folders. When reading, writing, editing, o
                             toast.error('Missing workspace, project, or working directory')
                             return
                           }
+
+                          setActiveFeatureId(feature.id)
+                          setActiveFeatureTitle(feature.title)
 
                           const displayMsg = `🔨 Building feature: **${feature.title}**`
                           const turnId = crypto.randomUUID()
@@ -3106,6 +3135,48 @@ You MUST focus your work within these folders. When reading, writing, editing, o
   // Right pane content (chat)
   const rightPaneContent = (
     <div className="flex h-full flex-col bg-brand-bg">
+      {/* Session context bar — always-visible project ID + optional feature ID */}
+      {projectId && (
+        <div className="flex items-center gap-3 border-b border-brand-border/40 bg-brand-card/30 px-4 py-1.5">
+          <div className="flex items-center gap-1.5">
+            <Layers size={11} className="text-brand-text-dim" />
+            <span className="text-[10px] font-medium text-brand-text-dim">Project</span>
+            <span className="rounded bg-brand-border/40 px-1.5 py-0.5 font-mono text-[10px] text-brand-text-muted select-all">
+              {projectId.slice(0, 8)}
+            </span>
+            {selectedProject?.name && (
+              <span className="text-[10px] text-brand-text-secondary truncate max-w-[180px]">{selectedProject.name}</span>
+            )}
+          </div>
+          {activeFeatureId && (
+            <>
+              <span className="text-brand-border text-[10px]">/</span>
+              <div className="flex items-center gap-1.5">
+                <Blocks size={11} className="text-brand-purple-soft" />
+                <span className="text-[10px] font-medium text-brand-purple-soft">Feature</span>
+                <span className="rounded bg-brand-purple/10 px-1.5 py-0.5 font-mono text-[10px] text-brand-purple-soft select-all">
+                  {activeFeatureId.slice(0, 8)}
+                </span>
+                {activeFeatureTitle && (
+                  <span className="text-[10px] text-brand-text-secondary truncate max-w-[180px]">{activeFeatureTitle}</span>
+                )}
+                <button
+                  onClick={() => {
+                    setActiveFeatureId(null)
+                    setActiveFeatureTitle(null)
+                    activeFeatureIdRef.current = null
+                  }}
+                  className="cursor-pointer rounded p-0.5 text-brand-text-dim/50 transition-colors hover:bg-brand-border/30 hover:text-brand-text-dim"
+                  title="Clear feature context"
+                >
+                  <X size={10} />
+                </button>
+              </div>
+            </>
+          )}
+        </div>
+      )}
+
       {/* Messages area */}
       <div ref={scrollContainerRef} className="flex-1 overflow-y-auto px-4 py-4">
         <div className="mx-auto max-w-3xl space-y-6">

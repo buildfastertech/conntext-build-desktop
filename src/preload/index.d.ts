@@ -25,6 +25,8 @@ export interface SessionData {
   sessionId: string
   sdkSessionId?: string | null
   projectId?: string | null
+  featureId?: string | null
+  featureTitle?: string | null
   title: string
   timestamp: number
   endTime: number | null
@@ -75,6 +77,8 @@ export interface ToolEvent {
 export interface SessionMetadata {
   sessionId: string
   projectId?: string | null
+  featureId?: string | null
+  featureTitle?: string | null
   title: string
   timestamp: number
   endTime: number | null
