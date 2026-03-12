@@ -1,6 +1,7 @@
 import { defineConfig, externalizeDepsPlugin } from 'electron-vite'
 import react from '@vitejs/plugin-react'
 import tailwindcss from '@tailwindcss/vite'
+import { resolve } from 'path'
 
 export default defineConfig({
   main: {
@@ -19,6 +20,12 @@ export default defineConfig({
   },
   renderer: {
     assetsInclude: ['**/*.riv'],
+    resolve: {
+      alias: {
+        // Force browser build of pusher-js (electron-vite defaults to Node build)
+        'pusher-js': resolve(__dirname, 'node_modules/pusher-js/dist/web/pusher.js')
+      }
+    },
     plugins: [react(), tailwindcss()]
   }
 })

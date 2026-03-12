@@ -1,5 +1,5 @@
 import { useState, useEffect, useRef } from 'react'
-import { Brain, FolderOpen, Zap, RefreshCw, ChevronDown, Building2, User, Check, ArrowLeft } from 'lucide-react'
+import { Brain, FolderOpen, Zap, RefreshCw, ChevronDown, Building2, User, Check, ArrowLeft, Radio } from 'lucide-react'
 import type { UserInfo, Workspace } from '../../../preload/index.d'
 
 interface AppHeaderProps {
@@ -23,6 +23,7 @@ interface AppHeaderProps {
     skillsLastSync?: string | null
     isSyncingSkills?: boolean
     onSyncSkills?: () => void
+    wsStatus?: 'disconnected' | 'connecting' | 'connected' | 'error'
 }
 
 export function AppHeader({
@@ -41,7 +42,8 @@ export function AppHeader({
     skillsVersion = 0,
     skillsLastSync = null,
     isSyncingSkills = false,
-    onSyncSkills
+    onSyncSkills,
+    wsStatus = 'disconnected'
 }: AppHeaderProps) {
     const [showMenu, setShowMenu] = useState(false)
     const [showSkillsPopover, setShowSkillsPopover] = useState(false)
@@ -250,6 +252,30 @@ export function AppHeader({
 
             {/* Right side */}
             <div className="flex items-center gap-0.5">
+                {/* WebSocket status */}
+                {wsStatus !== 'disconnected' && (
+                    <div
+                        className="relative rounded-lg p-2 text-brand-text-dim"
+                        title={`Live updates: ${wsStatus}`}
+                    >
+                        <Radio
+                            size={18}
+                            className={
+                                wsStatus === 'connected'
+                                    ? 'text-emerald-400'
+                                    : wsStatus === 'connecting'
+                                      ? 'animate-pulse text-amber-400'
+                                      : 'text-red-400'
+                            }
+                        />
+                        {wsStatus === 'connected' && (
+                            <span className="absolute right-1.5 top-1.5 h-2 w-2 rounded-full bg-emerald-400">
+                                <span className="absolute inset-0 animate-ping rounded-full bg-emerald-400 opacity-40" />
+                            </span>
+                        )}
+                    </div>
+                )}
+
                 {/* Memory (only show when project is selected) */}
                 {workingDirectory && onOpenMemory && (
                     <button

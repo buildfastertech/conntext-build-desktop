@@ -224,6 +224,8 @@ export interface ProductOwnersResponse {
 export interface ActiveTask {
   id: string
   title: string
+  description: string | null
+  ai_analysis: string | null
   project_id: string | null
   project_name: string | null
   status: string
@@ -243,6 +245,8 @@ export interface ActiveTicket {
   id: string
   reference: string
   subject: string
+  description: string | null
+  investigation: string | null
   service_desk_id: string
   service_desk_name: string | null
   priority: string
