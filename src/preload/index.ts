@@ -55,6 +55,8 @@ const api = {
     model?: string
     turnId?: string
     sessionTitle?: string
+    projectId?: string | null
+    featureId?: string | null
   }) => ipcRenderer.invoke('agent:send-message', params),
 
   abortAgent: (sessionId: string) => ipcRenderer.invoke('agent:abort', sessionId),
