@@ -3405,173 +3405,152 @@ You MUST focus your work within these folders. When reading, writing, editing, o
         onRenameSession={handleRenameSession}
       />
 
-      {/* Active Tasks panel */}
-      {selectedProject && productOwners.length > 0 && (
-        <div className="border-b border-brand-border/40" style={{ background: 'linear-gradient(135deg, rgba(20,20,24,0.97) 0%, rgba(16,16,20,0.99) 100%)' }}>
-          <div className="px-4 py-2">
-            {/* Panel header — always visible */}
-            <button
-              onClick={() => setIsActiveTasksPanelCollapsed(prev => !prev)}
-              className="flex w-full cursor-pointer items-center justify-between"
-            >
-              <div className="flex items-center gap-2">
-                <div className="flex h-5 w-5 items-center justify-center rounded-md bg-amber-500/15">
-                  <Zap size={11} className="text-amber-400" />
-                </div>
-                <span className="text-[11px] font-semibold tracking-wide uppercase text-brand-text-secondary">
-                  Active Tasks
-                </span>
-                {(() => {
-                  const ownerIds = new Set(productOwners.map(o => o.id))
-                  const assignedCount = activeTasks.filter(t => t.digital_employee_id && ownerIds.has(t.digital_employee_id)).length
-                    + activeTickets.filter(t => t.digital_employee_id && ownerIds.has(t.digital_employee_id)).length
-                  return assignedCount > 0 ? (
-                    <span className="rounded-full bg-amber-500/15 px-1.5 py-0.5 text-[10px] font-medium tabular-nums text-amber-400">
-                      {assignedCount}
+      {/* Resizable three-pane layout: Employee Panel | Features | Chat */}
+      <div className="flex-1 overflow-hidden">
+        {selectedProject && productOwners.length > 0 ? (
+          <ResizablePanes
+            leftPane={
+              <div className="flex h-full flex-col overflow-hidden" style={{ background: 'linear-gradient(180deg, rgba(20,20,24,0.97) 0%, rgba(16,16,20,0.99) 100%)' }}>
+                {/* Panel header */}
+                <div className="border-b border-brand-border/60 px-3 py-3">
+                  <div className="flex items-center gap-2">
+                    <div className="flex h-5 w-5 items-center justify-center rounded-md bg-amber-500/15">
+                      <Zap size={11} className="text-amber-400" />
+                    </div>
+                    <span className="text-[11px] font-semibold tracking-wide uppercase text-brand-text-secondary">
+                      Active Work
                     </span>
-                  ) : null
-                })()}
-              </div>
-              <div className="flex items-center gap-2">
-                {/* Employee summary — always visible when collapsed */}
-                {productOwners.length > 0 && isActiveTasksPanelCollapsed && (
-                  <div className="flex items-center gap-3">
-                    {productOwners.slice(0, 3).map(owner => (
-                      <div key={owner.id} className="flex items-center gap-2">
-                        {owner.profile_photo_url ? (
-                          <img
-                            src={owner.profile_photo_url}
-                            alt={owner.name}
-                            className="h-6 w-6 rounded-full object-cover ring-1 ring-brand-purple/30"
-                          />
-                        ) : (
-                          <div className="flex h-6 w-6 items-center justify-center rounded-full bg-brand-purple/20 ring-1 ring-brand-purple/30">
-                            <User size={11} className="text-brand-purple-soft" />
-                          </div>
-                        )}
-                        <span className="text-[10px] font-medium text-brand-text">{owner.name}</span>
-                        <span className="rounded-md border border-brand-purple/25 bg-brand-purple/10 px-1.5 py-0.5 text-[8px] font-semibold uppercase tracking-wider text-brand-purple-soft">
-                          Product Owner
+                    {(() => {
+                      const ownerIds = new Set(productOwners.map(o => o.id))
+                      const assignedCount = activeTasks.filter(t => t.digital_employee_id && ownerIds.has(t.digital_employee_id)).length
+                        + activeTickets.filter(t => t.digital_employee_id && ownerIds.has(t.digital_employee_id)).length
+                      return assignedCount > 0 ? (
+                        <span className="rounded-full bg-amber-500/15 px-1.5 py-0.5 text-[10px] font-medium tabular-nums text-amber-400">
+                          {assignedCount}
                         </span>
-                      </div>
-                    ))}
-                    {productOwners.length > 3 && (
-                      <span className="text-[10px] text-brand-text-dim">+{productOwners.length - 3}</span>
-                    )}
+                      ) : null
+                    })()}
                   </div>
-                )}
-                {isActiveTasksPanelCollapsed ? (
-                  <ChevronDown size={13} className="text-brand-text-dim" />
-                ) : (
-                  <ChevronUp size={13} className="text-brand-text-dim" />
-                )}
-              </div>
-            </button>
+                </div>
 
-            {/* Expanded content — employee rows with their assigned tasks */}
-            {!isActiveTasksPanelCollapsed && (
-              <div className="mt-3 flex flex-col gap-2.5">
-                {productOwners.map(owner => {
-                  const ownerTasks = activeTasks.filter(t => t.digital_employee_id === owner.id)
-                  const ownerTickets = activeTickets.filter(t => t.digital_employee_id === owner.id)
-                  const priorityColors: Record<string, string> = {
-                    critical: 'border-red-500/40 text-red-400',
-                    high: 'border-red-400/30 text-red-400',
-                    medium: 'border-amber-400/30 text-amber-400',
-                    low: 'border-sky-400/30 text-sky-400',
-                  }
+                {/* Employee sections with their tasks/tickets */}
+                <div className="flex-1 overflow-y-auto px-3 py-3">
+                  <div className="flex flex-col gap-4">
+                    {productOwners.map(owner => {
+                      const ownerTasks = activeTasks.filter(t => t.digital_employee_id === owner.id)
+                      const ownerTickets = activeTickets.filter(t => t.digital_employee_id === owner.id)
+                      const priorityColors: Record<string, string> = {
+                        critical: 'border-red-500/40 text-red-400',
+                        high: 'border-red-400/30 text-red-400',
+                        medium: 'border-amber-400/30 text-amber-400',
+                        low: 'border-sky-400/30 text-sky-400',
+                      }
 
-                  return (
-                    <div
-                      key={owner.id}
-                      className="flex items-stretch gap-4 rounded-xl border border-brand-border/20 px-3.5 py-3"
-                      style={{ background: 'linear-gradient(135deg, rgba(139,92,246,0.04) 0%, rgba(20,20,24,0.6) 100%)' }}
-                    >
-                      {/* Left — Employee identity */}
-                      <div className="flex shrink-0 items-center gap-3" style={{ minWidth: '180px' }}>
-                        <div className="relative">
-                          {owner.profile_photo_url ? (
-                            <img
-                              src={owner.profile_photo_url}
-                              alt={owner.name}
-                              className="h-10 w-10 rounded-full object-cover ring-2 ring-brand-purple/30 shadow-lg shadow-brand-purple/10"
-                            />
+                      return (
+                        <div key={owner.id} className="flex flex-col gap-2.5">
+                          {/* Employee identity */}
+                          <div className="flex items-center gap-2.5">
+                            <div className="relative shrink-0">
+                              {owner.profile_photo_url ? (
+                                <img
+                                  src={owner.profile_photo_url}
+                                  alt={owner.name}
+                                  className="h-9 w-9 rounded-full object-cover ring-2 ring-brand-purple/30 shadow-lg shadow-brand-purple/10"
+                                />
+                              ) : (
+                                <div className="flex h-9 w-9 items-center justify-center rounded-full bg-gradient-to-br from-brand-purple/30 to-brand-purple/10 ring-2 ring-brand-purple/30">
+                                  <User size={14} className="text-brand-purple-soft" />
+                                </div>
+                              )}
+                              <span className="absolute -bottom-0.5 -right-0.5 inline-flex h-2.5 w-2.5 rounded-full border-2 border-[#141418] bg-emerald-400 shadow-sm shadow-emerald-400/50" />
+                            </div>
+                            <div className="flex min-w-0 flex-col">
+                              <span className="truncate text-[12px] font-semibold leading-tight text-brand-text">{owner.name}</span>
+                              <span className="truncate text-[10px] leading-tight text-brand-text-dim">{owner.job_description}</span>
+                              <span className="mt-0.5 inline-flex w-fit rounded-md border border-brand-purple/25 bg-brand-purple/10 px-1.5 py-0.5 text-[8px] font-semibold uppercase tracking-wider text-brand-purple-soft">
+                                Product Owner
+                              </span>
+                            </div>
+                          </div>
+
+                          {/* Assigned tasks */}
+                          {ownerTasks.length === 0 && ownerTickets.length === 0 ? (
+                            <span className="px-1 text-[10px] italic text-brand-text-dim/50">No active work assigned</span>
                           ) : (
-                            <div className="flex h-10 w-10 items-center justify-center rounded-full bg-gradient-to-br from-brand-purple/30 to-brand-purple/10 ring-2 ring-brand-purple/30">
-                              <User size={16} className="text-brand-purple-soft" />
+                            <div className="flex flex-col gap-1.5">
+                              {ownerTasks.map(task => {
+                                const pStyle = priorityColors[task.priority] || 'border-brand-border/30 text-brand-text-dim'
+                                return (
+                                  <div
+                                    key={task.id}
+                                    className="rounded-lg border border-brand-border/25 bg-brand-card/40 px-2.5 py-2"
+                                  >
+                                    <div className="mb-1 flex items-center gap-1.5">
+                                      {task.status === 'in_progress'
+                                        ? <span className="inline-flex h-2 w-2 shrink-0 rounded-full bg-blue-400 animate-pulse" />
+                                        : <span className="inline-flex h-2 w-2 shrink-0 rounded-full bg-brand-text-dim/40" />
+                                      }
+                                      <ListTodo size={11} className="shrink-0 text-amber-400/60" />
+                                      <span className={`ml-auto shrink-0 rounded border px-1 py-0.5 text-[7px] font-bold uppercase tracking-wider ${pStyle}`}>
+                                        {task.priority}
+                                      </span>
+                                    </div>
+                                    <span className="block text-[11px] font-medium leading-snug text-brand-text line-clamp-2">{task.title}</span>
+                                  </div>
+                                )
+                              })}
+                              {ownerTickets.map(ticket => {
+                                const pStyle = priorityColors[ticket.priority] || 'border-brand-border/30 text-brand-text-dim'
+                                return (
+                                  <div
+                                    key={ticket.id}
+                                    className="rounded-lg border border-brand-border/25 bg-brand-card/40 px-2.5 py-2"
+                                  >
+                                    <div className="mb-1 flex items-center gap-1.5">
+                                      <Ticket size={11} className="shrink-0 text-brand-purple-soft/60" />
+                                      <span className="shrink-0 rounded bg-brand-purple/15 px-1 py-0.5 text-[8px] font-mono font-semibold text-brand-purple-soft">{ticket.reference}</span>
+                                      <span className={`ml-auto shrink-0 rounded border px-1 py-0.5 text-[7px] font-bold uppercase tracking-wider ${pStyle}`}>
+                                        {ticket.priority}
+                                      </span>
+                                    </div>
+                                    <span className="block text-[11px] font-medium leading-snug text-brand-text line-clamp-2">{ticket.subject}</span>
+                                  </div>
+                                )
+                              })}
                             </div>
                           )}
-                          <span className="absolute -bottom-0.5 -right-0.5 inline-flex h-2.5 w-2.5 rounded-full border-2 border-[#141418] bg-emerald-400 shadow-sm shadow-emerald-400/50" />
-                        </div>
-                        <div className="flex flex-col gap-1">
-                          <span className="text-[12px] font-semibold leading-tight text-brand-text">{owner.name}</span>
-                          <span className="text-[10px] leading-tight text-brand-text-dim">{owner.job_description}</span>
-                          <span className="mt-0.5 inline-flex w-fit rounded-md border border-brand-purple/25 bg-brand-purple/10 px-1.5 py-0.5 text-[8px] font-semibold uppercase tracking-wider text-brand-purple-soft">
-                            Product Owner
-                          </span>
-                        </div>
-                      </div>
 
-                      {/* Right — Assigned tasks & tickets */}
-                      <div className="flex flex-1 flex-col gap-1.5 overflow-hidden">
-                        {ownerTasks.length === 0 && ownerTickets.length === 0 && (
-                          <span className="text-[10px] italic text-brand-text-dim/50">No active tasks or tickets assigned</span>
-                        )}
-                        {ownerTasks.map(task => {
-                          const pStyle = priorityColors[task.priority] || 'border-brand-border/30 text-brand-text-dim'
-                          return (
-                            <div
-                              key={task.id}
-                              className="flex items-center gap-2.5 rounded-lg border border-brand-border/25 bg-brand-card/40 px-3 py-2"
-                            >
-                              {task.status === 'in_progress'
-                                ? <span className="inline-flex h-2 w-2 shrink-0 rounded-full bg-blue-400 animate-pulse" />
-                                : <span className="inline-flex h-2 w-2 shrink-0 rounded-full bg-brand-text-dim/40" />
-                              }
-                              <ListTodo size={12} className="shrink-0 text-amber-400/60" />
-                              <span className="min-w-0 flex-1 truncate text-[11px] font-medium text-brand-text">{task.title}</span>
-                              <span className={`shrink-0 rounded border px-1.5 py-0.5 text-[8px] font-bold uppercase tracking-wider ${pStyle}`}>
-                                {task.priority}
-                              </span>
-                            </div>
-                          )
-                        })}
-                        {ownerTickets.map(ticket => {
-                          const pStyle = priorityColors[ticket.priority] || 'border-brand-border/30 text-brand-text-dim'
-                          return (
-                            <div
-                              key={ticket.id}
-                              className="flex items-center gap-2.5 rounded-lg border border-brand-border/25 bg-brand-card/40 px-3 py-2"
-                            >
-                              <Ticket size={12} className="shrink-0 text-brand-purple-soft/60" />
-                              <span className="shrink-0 rounded bg-brand-purple/15 px-1 py-0.5 text-[9px] font-mono font-semibold text-brand-purple-soft">{ticket.reference}</span>
-                              <span className="min-w-0 flex-1 truncate text-[11px] font-medium text-brand-text">{ticket.subject}</span>
-                              <span className={`shrink-0 rounded border px-1.5 py-0.5 text-[8px] font-bold uppercase tracking-wider ${pStyle}`}>
-                                {ticket.priority}
-                              </span>
-                            </div>
-                          )
-                        })}
-                      </div>
-                    </div>
-                  )
-                })}
-
+                          {/* Separator between owners */}
+                          <div className="border-t border-brand-border/15" />
+                        </div>
+                      )
+                    })}
+                  </div>
+                </div>
               </div>
-            )}
-          </div>
-        </div>
-      )}
-
-      {/* Resizable two-pane layout */}
-      <div className="flex-1 overflow-hidden">
-        <ResizablePanes
-          leftPane={leftPaneContent}
-          rightPane={rightPaneContent}
-          defaultLeftWidth={300}
-          minLeftWidth={200}
-          minRightWidth={400}
-        />
+            }
+            rightPane={
+              <ResizablePanes
+                leftPane={leftPaneContent}
+                rightPane={rightPaneContent}
+                defaultLeftWidth={300}
+                minLeftWidth={200}
+                minRightWidth={400}
+              />
+            }
+            defaultLeftWidth={280}
+            minLeftWidth={220}
+            minRightWidth={600}
+          />
+        ) : (
+          <ResizablePanes
+            leftPane={leftPaneContent}
+            rightPane={rightPaneContent}
+            defaultLeftWidth={300}
+            minLeftWidth={200}
+            minRightWidth={400}
+          />
+        )}
       </div>
 
       {/* Memory Dialog */}
