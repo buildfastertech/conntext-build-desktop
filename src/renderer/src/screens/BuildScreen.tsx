@@ -3421,45 +3421,42 @@ You MUST focus your work within these folders. When reading, writing, editing, o
                 <span className="text-[11px] font-semibold tracking-wide uppercase text-brand-text-secondary">
                   Active Tasks
                 </span>
-                {(activeTasks.length + activeTickets.length) > 0 && (
-                  <span className="rounded-full bg-amber-500/15 px-1.5 py-0.5 text-[10px] font-medium tabular-nums text-amber-400">
-                    {activeTasks.length + activeTickets.length}
-                  </span>
-                )}
+                {(() => {
+                  const ownerIds = new Set(productOwners.map(o => o.id))
+                  const assignedCount = activeTasks.filter(t => t.digital_employee_id && ownerIds.has(t.digital_employee_id)).length
+                    + activeTickets.filter(t => t.digital_employee_id && ownerIds.has(t.digital_employee_id)).length
+                  return assignedCount > 0 ? (
+                    <span className="rounded-full bg-amber-500/15 px-1.5 py-0.5 text-[10px] font-medium tabular-nums text-amber-400">
+                      {assignedCount}
+                    </span>
+                  ) : null
+                })()}
               </div>
               <div className="flex items-center gap-2">
-                {/* Employee avatars — always visible as summary when collapsed */}
+                {/* Employee summary — always visible when collapsed */}
                 {productOwners.length > 0 && isActiveTasksPanelCollapsed && (
-                  <div className="flex items-center gap-2">
-                    {productOwners.slice(0, 4).map(owner => {
-                      const taskCount = activeTasks.filter(t => t.assigned_to_id === owner.id).length
-                        + activeTickets.filter(t => t.assigned_to_id === owner.id).length
-                      return (
-                        <div key={owner.id} className="flex items-center gap-1.5">
-                          <div className="relative">
-                            {owner.profile_photo_url ? (
-                              <img
-                                src={owner.profile_photo_url}
-                                alt={owner.name}
-                                className="h-5 w-5 rounded-full object-cover ring-1 ring-brand-border/40"
-                              />
-                            ) : (
-                              <div className="flex h-5 w-5 items-center justify-center rounded-full bg-brand-purple/20 ring-1 ring-brand-purple/30">
-                                <User size={10} className="text-brand-purple-soft" />
-                              </div>
-                            )}
+                  <div className="flex items-center gap-3">
+                    {productOwners.slice(0, 3).map(owner => (
+                      <div key={owner.id} className="flex items-center gap-2">
+                        {owner.profile_photo_url ? (
+                          <img
+                            src={owner.profile_photo_url}
+                            alt={owner.name}
+                            className="h-6 w-6 rounded-full object-cover ring-1 ring-brand-purple/30"
+                          />
+                        ) : (
+                          <div className="flex h-6 w-6 items-center justify-center rounded-full bg-brand-purple/20 ring-1 ring-brand-purple/30">
+                            <User size={11} className="text-brand-purple-soft" />
                           </div>
-                          <span className="text-[10px] text-brand-text-dim">{owner.name}</span>
-                          {taskCount > 0 && (
-                            <span className="rounded-full bg-amber-500/15 px-1 py-0.5 text-[9px] font-medium tabular-nums text-amber-400">
-                              {taskCount}
-                            </span>
-                          )}
-                        </div>
-                      )
-                    })}
-                    {productOwners.length > 4 && (
-                      <span className="text-[10px] text-brand-text-dim">+{productOwners.length - 4}</span>
+                        )}
+                        <span className="text-[10px] font-medium text-brand-text">{owner.name}</span>
+                        <span className="rounded-md border border-brand-purple/25 bg-brand-purple/10 px-1.5 py-0.5 text-[8px] font-semibold uppercase tracking-wider text-brand-purple-soft">
+                          Product Owner
+                        </span>
+                      </div>
+                    ))}
+                    {productOwners.length > 3 && (
+                      <span className="text-[10px] text-brand-text-dim">+{productOwners.length - 3}</span>
                     )}
                   </div>
                 )}
@@ -3475,8 +3472,8 @@ You MUST focus your work within these folders. When reading, writing, editing, o
             {!isActiveTasksPanelCollapsed && (
               <div className="mt-3 flex flex-col gap-2.5">
                 {productOwners.map(owner => {
-                  const ownerTasks = activeTasks.filter(t => t.assigned_to_id === owner.id)
-                  const ownerTickets = activeTickets.filter(t => t.assigned_to_id === owner.id)
+                  const ownerTasks = activeTasks.filter(t => t.digital_employee_id === owner.id)
+                  const ownerTickets = activeTickets.filter(t => t.digital_employee_id === owner.id)
                   const priorityColors: Record<string, string> = {
                     critical: 'border-red-500/40 text-red-400',
                     high: 'border-red-400/30 text-red-400',
@@ -3487,7 +3484,7 @@ You MUST focus your work within these folders. When reading, writing, editing, o
                   return (
                     <div
                       key={owner.id}
-                      className="flex items-start gap-4 rounded-xl border border-brand-border/20 px-3.5 py-3"
+                      className="flex items-stretch gap-4 rounded-xl border border-brand-border/20 px-3.5 py-3"
                       style={{ background: 'linear-gradient(135deg, rgba(139,92,246,0.04) 0%, rgba(20,20,24,0.6) 100%)' }}
                     >
                       {/* Left — Employee identity */}
@@ -3506,32 +3503,34 @@ You MUST focus your work within these folders. When reading, writing, editing, o
                           )}
                           <span className="absolute -bottom-0.5 -right-0.5 inline-flex h-2.5 w-2.5 rounded-full border-2 border-[#141418] bg-emerald-400 shadow-sm shadow-emerald-400/50" />
                         </div>
-                        <div className="flex flex-col gap-0.5">
+                        <div className="flex flex-col gap-1">
                           <span className="text-[12px] font-semibold leading-tight text-brand-text">{owner.name}</span>
                           <span className="text-[10px] leading-tight text-brand-text-dim">{owner.job_description}</span>
+                          <span className="mt-0.5 inline-flex w-fit rounded-md border border-brand-purple/25 bg-brand-purple/10 px-1.5 py-0.5 text-[8px] font-semibold uppercase tracking-wider text-brand-purple-soft">
+                            Product Owner
+                          </span>
                         </div>
                       </div>
 
                       {/* Right — Assigned tasks & tickets */}
-                      <div className="flex flex-1 flex-wrap items-center gap-1.5 overflow-hidden">
+                      <div className="flex flex-1 flex-col gap-1.5 overflow-hidden">
                         {ownerTasks.length === 0 && ownerTickets.length === 0 && (
-                          <span className="text-[10px] italic text-brand-text-dim/50">No active tasks</span>
+                          <span className="text-[10px] italic text-brand-text-dim/50">No active tasks or tickets assigned</span>
                         )}
                         {ownerTasks.map(task => {
                           const pStyle = priorityColors[task.priority] || 'border-brand-border/30 text-brand-text-dim'
                           return (
                             <div
                               key={task.id}
-                              className="flex items-center gap-2 rounded-lg border border-brand-border/25 bg-brand-card/40 px-2.5 py-1.5"
-                              style={{ maxWidth: '280px' }}
+                              className="flex items-center gap-2.5 rounded-lg border border-brand-border/25 bg-brand-card/40 px-3 py-2"
                             >
                               {task.status === 'in_progress'
-                                ? <span className="inline-flex h-1.5 w-1.5 shrink-0 rounded-full bg-blue-400 animate-pulse" />
-                                : <span className="inline-flex h-1.5 w-1.5 shrink-0 rounded-full bg-brand-text-dim/40" />
+                                ? <span className="inline-flex h-2 w-2 shrink-0 rounded-full bg-blue-400 animate-pulse" />
+                                : <span className="inline-flex h-2 w-2 shrink-0 rounded-full bg-brand-text-dim/40" />
                               }
-                              <ListTodo size={10} className="shrink-0 text-brand-text-dim/60" />
+                              <ListTodo size={12} className="shrink-0 text-amber-400/60" />
                               <span className="min-w-0 flex-1 truncate text-[11px] font-medium text-brand-text">{task.title}</span>
-                              <span className={`shrink-0 rounded border px-1 py-0.5 text-[8px] font-bold uppercase tracking-wider ${pStyle}`}>
+                              <span className={`shrink-0 rounded border px-1.5 py-0.5 text-[8px] font-bold uppercase tracking-wider ${pStyle}`}>
                                 {task.priority}
                               </span>
                             </div>
@@ -3542,13 +3541,12 @@ You MUST focus your work within these folders. When reading, writing, editing, o
                           return (
                             <div
                               key={ticket.id}
-                              className="flex items-center gap-2 rounded-lg border border-brand-border/25 bg-brand-card/40 px-2.5 py-1.5"
-                              style={{ maxWidth: '280px' }}
+                              className="flex items-center gap-2.5 rounded-lg border border-brand-border/25 bg-brand-card/40 px-3 py-2"
                             >
-                              <Ticket size={10} className="shrink-0 text-brand-purple-soft/60" />
+                              <Ticket size={12} className="shrink-0 text-brand-purple-soft/60" />
                               <span className="shrink-0 rounded bg-brand-purple/15 px-1 py-0.5 text-[9px] font-mono font-semibold text-brand-purple-soft">{ticket.reference}</span>
                               <span className="min-w-0 flex-1 truncate text-[11px] font-medium text-brand-text">{ticket.subject}</span>
-                              <span className={`shrink-0 rounded border px-1 py-0.5 text-[8px] font-bold uppercase tracking-wider ${pStyle}`}>
+                              <span className={`shrink-0 rounded border px-1.5 py-0.5 text-[8px] font-bold uppercase tracking-wider ${pStyle}`}>
                                 {ticket.priority}
                               </span>
                             </div>

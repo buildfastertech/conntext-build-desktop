@@ -230,6 +230,7 @@ export interface ActiveTask {
   priority: string
   assigned_to_id: string | null
   assigned_to_name: string | null
+  digital_employee_id: string | null
 }
 
 export interface ActiveTasksResponse {
@@ -247,6 +248,7 @@ export interface ActiveTicket {
   priority: string
   assigned_to_id: string | null
   assigned_to_name: string | null
+  digital_employee_id: string | null
 }
 
 export interface ActiveTicketsResponse {
