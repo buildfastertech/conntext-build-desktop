@@ -127,6 +127,14 @@ const api = {
   fetchActiveTickets: (workspaceId: string) =>
     ipcRenderer.invoke('active-tickets:fetch', workspaceId),
 
+  // WebSocket — config is fetched from main, Pusher runs in renderer (browser context)
+  getWebSocketConfig: () =>
+    ipcRenderer.invoke('websocket:get-config') as Promise<{
+      success: boolean
+      error?: string
+      config?: { apiUrl: string; apiToken: string; key: string; host: string; port: number; scheme: string }
+    }>,
+
   // User question responses
   respondToQuestion: (questionId: string, response: string) =>
     ipcRenderer.invoke('agent:respond-to-question', questionId, response),

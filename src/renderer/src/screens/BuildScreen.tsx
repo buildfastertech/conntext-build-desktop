@@ -4,7 +4,8 @@ import ReactMarkdown from 'react-markdown'
 import remarkGfm from 'remark-gfm'
 import { toast } from 'sonner'
 import { FolderOpen, Pencil, Check, X, ChevronDown, ChevronUp, RefreshCw, AlertCircle, Layers, Blocks, Lightbulb, Users, Heart, TrendingUp, DollarSign, Cpu, Palette, Link2, Cog, MessageSquare, Hammer, Zap, User, ListTodo, Ticket } from 'lucide-react'
-import type { StreamEvent, UserInfo, SessionMetadata, Turn, ToolEvent, Workspace, UserQuestion, Project, ProjectFeature, ProductOwner, ActiveTask, ActiveTicket } from '../../../preload/index.d'
+import Pusher from 'pusher-js'
+import type { StreamEvent, UserInfo, SessionMetadata, Turn, ToolEvent, Workspace, UserQuestion, Project, ProjectFeature, ProductOwner, ActiveTask, ActiveTicket, WebSocketEvent } from '../../../preload/index.d'
 import { ResizablePanes } from '../components/ResizablePanes'
 import { MemoryDialog } from '../components/MemoryDialog'
 import { SettingsDialog } from '../components/SettingsDialog'
@@ -972,6 +973,94 @@ export function BuildScreen({ user, onLogout, workingDirectory: initialWorkingDi
     loadProductOwners()
     loadActiveTasks()
   }, [loadFeatures, loadProductOwners, loadActiveTasks])
+
+  // Connect WebSocket (Pusher in renderer/browser context) when workspace is active
+  useEffect(() => {
+    if (!activeWorkspaceProp?.id) return
+
+    let pusher: Pusher | null = null
+
+    const connectWS = async () => {
+      const result = await window.api.getWebSocketConfig()
+      if (!result.success || !result.config) {
+        console.warn('[WebSocket] Failed to get config:', result.error)
+        return
+      }
+
+      const { config } = result
+      const forceTLS = config.scheme === 'https'
+
+      console.log('[WebSocket] Connecting from renderer with config:', {
+        key: config.key,
+        host: config.host,
+        port: config.port,
+        scheme: config.scheme
+      })
+
+      pusher = new Pusher(config.key, {
+        cluster: '',
+        wsHost: config.host,
+        wsPort: forceTLS ? undefined : config.port,
+        wssPort: forceTLS ? config.port : undefined,
+        forceTLS,
+        enabledTransports: ['ws', 'wss'],
+        disableStats: true,
+        authorizer: (channel) => ({
+          authorize: (socketId, callback) => {
+            fetch(`${config.apiUrl}/api/broadcasting/auth`, {
+              method: 'POST',
+              headers: {
+                'Content-Type': 'application/json',
+                Accept: 'application/json',
+                Authorization: `Bearer ${config.apiToken}`
+              },
+              body: JSON.stringify({
+                socket_id: socketId,
+                channel_name: channel.name
+              })
+            })
+              .then((res) => {
+                if (!res.ok) throw new Error(`Auth failed: ${res.statusText}`)
+                return res.json()
+              })
+              .then((data) => callback(null, data))
+              .catch((err) => callback(err, null as any))
+          }
+        })
+      })
+
+      pusher.connection.bind('connected', () => {
+        console.log('[WebSocket] Connected to Reverb')
+      })
+      pusher.connection.bind('error', (err: any) => {
+        console.error('[WebSocket] Connection error:', err)
+      })
+
+      // Subscribe to workspace channel
+      const wsChannel = pusher.subscribe(`private-workspace.${activeWorkspaceProp.id}`)
+      wsChannel.bind('pusher:subscription_succeeded', () => {
+        console.log('[WebSocket] Subscribed to workspace channel')
+      })
+      wsChannel.bind('pusher:subscription_error', (err: any) => {
+        console.error('[WebSocket] Workspace subscription error:', err)
+      })
+      wsChannel.bind('WorkspaceDataUpdated', (data: any) => {
+        console.log('[WebSocket] WorkspaceDataUpdated:', data)
+        if (data.type === 'task' || data.type === 'ticket') {
+          loadActiveTasks()
+        }
+      })
+    }
+
+    connectWS()
+
+    return () => {
+      if (pusher) {
+        pusher.disconnect()
+        console.log('[WebSocket] Disconnected')
+      }
+    }
+  }, [activeWorkspaceProp?.id, loadActiveTasks])
 
   const handleSyncSkills = async () => {
     setIsSyncingSkills(true)

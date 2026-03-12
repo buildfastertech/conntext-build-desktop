@@ -9,6 +9,7 @@ import { AgentService } from './agent-service'
 import { AuthStore } from './auth-store'
 import { AppStateStore } from './app-state-store'
 import { SkillsStore } from './skills-store'
+// WebSocketService no longer used — Pusher.js runs in the renderer (browser context)
 import { resolveUserQuestion } from './tools/ask-user'
 
 let mainWindow: BrowserWindow | null = null
@@ -16,6 +17,7 @@ const agentService = new AgentService()
 const authStore = new AuthStore()
 const appStateStore = new AppStateStore()
 const skillsStore = new SkillsStore()
+// webSocketService removed — Pusher.js now runs in the renderer process
 
 /**
  * Get the path to the local skills cache directory.
@@ -989,6 +991,50 @@ ipcMain.handle('session:delete', async (_event, workingDirectory: string, sessio
   } catch (error) {
     console.error('Failed to delete session:', error)
     return { success: false }
+  }
+})
+
+// WebSocket config for renderer-side Pusher connection
+// (Pusher.js must run in the renderer/browser context, not Node.js main process)
+ipcMain.handle('websocket:get-config', async () => {
+  const credentials = authStore.getCredentials()
+  if (!credentials) {
+    return { success: false, error: 'Not authenticated' }
+  }
+
+  try {
+    const configResponse = await fetch(`${credentials.apiUrl}/api/broadcasting/config`, {
+      headers: {
+        Accept: 'application/json',
+        Authorization: `Bearer ${credentials.apiToken}`
+      }
+    })
+
+    let wsConfig = { key: '', host: '', port: 443, scheme: 'https' }
+
+    if (configResponse.ok) {
+      const remoteConfig = await configResponse.json()
+      wsConfig = {
+        key: remoteConfig.key || '',
+        host: remoteConfig.host || '',
+        port: remoteConfig.port || 443,
+        scheme: remoteConfig.scheme || 'https'
+      }
+    }
+
+    return {
+      success: true,
+      config: {
+        apiUrl: credentials.apiUrl,
+        apiToken: credentials.apiToken,
+        ...wsConfig
+      }
+    }
+  } catch (error) {
+    return {
+      success: false,
+      error: error instanceof Error ? error.message : 'Failed to fetch config'
+    }
   }
 })
 

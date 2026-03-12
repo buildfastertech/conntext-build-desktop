@@ -257,6 +257,12 @@ export interface ActiveTicketsResponse {
   error?: string
 }
 
+export interface WebSocketEvent {
+  type: string
+  action: string
+  data: Record<string, unknown>
+}
+
 export interface ElectronAPI {
   // Auth
   getCredentials: () => Promise<StoredCredentials | null>
@@ -357,6 +363,13 @@ export interface ElectronAPI {
   // Active tasks & tickets
   fetchActiveTasks: (workspaceId: string, projectId: string) => Promise<ActiveTasksResponse>
   fetchActiveTickets: (workspaceId: string) => Promise<ActiveTicketsResponse>
+
+  // WebSocket — config is fetched from main, Pusher runs in renderer (browser context)
+  getWebSocketConfig: () => Promise<{
+    success: boolean
+    error?: string
+    config?: { apiUrl: string; apiToken: string; key: string; host: string; port: number; scheme: string }
+  }>
 
   // User question responses
   respondToQuestion: (questionId: string, response: string) => Promise<{ success: boolean }>
