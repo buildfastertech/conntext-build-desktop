@@ -320,6 +320,8 @@ export interface ElectronAPI {
     model?: string
     turnId?: string
     sessionTitle?: string
+    projectId?: string | null
+    featureId?: string | null
     previousTurns?: Turn[]
   }) => Promise<{ sessionId: string; success: boolean }>
 

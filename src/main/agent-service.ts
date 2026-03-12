@@ -1047,6 +1047,8 @@ Please proceed to complete the user's request using the appropriate tools.`
           session.meta.completedTurns.push({ ...turn })
         }
         session.activeTurn = null
+        // Cancel any pending debounced save — the immediate save below supersedes it
+        this.cancelPendingSave(session.id)
         // Force immediate save on completion
         this.saveSessionToDisk(session)
         break
@@ -1061,6 +1063,8 @@ Please proceed to complete the user's request using the appropriate tools.`
           session.meta.completedTurns.push({ ...turn })
         }
         session.activeTurn = null
+        // Cancel any pending debounced save — the immediate save below supersedes it
+        this.cancelPendingSave(session.id)
         this.saveSessionToDisk(session)
         break
       }
@@ -1080,6 +1084,15 @@ Please proceed to complete the user's request using the appropriate tools.`
       this.saveSessionToDisk(session)
     }, 2000)
     this.saveTimers.set(session.id, timer)
+  }
+
+  /** Cancel a pending debounced save (e.g. when an immediate save supersedes it). */
+  private cancelPendingSave(sessionId: string): void {
+    const timer = this.saveTimers.get(sessionId)
+    if (timer) {
+      clearTimeout(timer)
+      this.saveTimers.delete(sessionId)
+    }
   }
 
   /**

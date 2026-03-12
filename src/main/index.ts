@@ -810,6 +810,8 @@ ipcMain.handle('agent:send-message', async (_event, params: {
   model?: string
   turnId?: string
   sessionTitle?: string
+  projectId?: string | null
+  featureId?: string | null
 }) => {
   return agentService.sendMessage(params, (event) => {
     mainWindow?.webContents.send('agent:stream-event', event)

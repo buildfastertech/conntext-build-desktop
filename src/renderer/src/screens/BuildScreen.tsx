@@ -528,6 +528,8 @@ export function BuildScreen({ user, onLogout, workingDirectory: initialWorkingDi
       model: selectedModelRef.current,
       turnId: newTurn.id,
       sessionTitle: currentSessionTitleRef.current || newTurn.userMessage.slice(0, 50),
+      projectId: projectIdRef.current,
+      featureId: activeFeatureIdRef.current ?? null,
       previousTurns: turnsRef.current.filter(t => t.isComplete)
     }).catch(() => {
       setTurns((prev) =>
@@ -1486,6 +1488,8 @@ This file stores important context and information for the AI agent.
           model: selectedModel,
           turnId: newTurn.id,
           sessionTitle: currentSessionTitle || newTurn.userMessage.slice(0, 50),
+          projectId: projectId ?? null,
+          featureId: activeFeatureIdRef.current ?? null,
           previousTurns: turns.filter(t => t.isComplete)
         }).then(result => {
           // Safety net: commit any streaming text and mark complete.
@@ -1616,6 +1620,8 @@ This file stores important context and information for the AI agent.
           model: selectedModel,
           turnId: newTurn.id,
           sessionTitle: currentSessionTitle || newTurn.userMessage.slice(0, 50),
+          projectId: projectId ?? null,
+          featureId: activeFeatureIdRef.current ?? null,
           previousTurns: turns.filter(t => t.isComplete)
         }).catch(() => {
           setTurns((prev) =>
@@ -1769,6 +1775,8 @@ You MUST focus your work within these folders. When reading, writing, editing, o
         model: selectedModel,
         turnId: newTurn.id,
         sessionTitle: currentSessionTitle || turns[0]?.userMessage?.slice(0, 50) || newTurn.userMessage.slice(0, 50),
+        projectId: projectId ?? null,
+        featureId: activeFeatureIdRef.current ?? null,
         previousTurns: turns.filter(t => t.isComplete)
       })
 
