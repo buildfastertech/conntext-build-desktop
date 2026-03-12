@@ -51,6 +51,7 @@ export function BuildScreen({ user, onLogout, workingDirectory: initialWorkingDi
   const [currentSessionTitle, setCurrentSessionTitle] = useState<string>('')
   const [isActionMenuOpen, setIsActionMenuOpen] = useState(false)
   const [isSettingsOpen, setIsSettingsOpen] = useState(false)
+  const [wsStatus, setWsStatus] = useState<'disconnected' | 'connecting' | 'connected' | 'error'>('disconnected')
   const [recentDirectories, setRecentDirectories] = useState<string[]>([])
   const [previewFilePath, setPreviewFilePath] = useState<string | null>(null)
   const [pendingQuestions, setPendingQuestions] = useState<UserQuestion[]>([])
@@ -94,6 +95,11 @@ export function BuildScreen({ user, onLogout, workingDirectory: initialWorkingDi
   const [activeTasks, setActiveTasks] = useState<ActiveTask[]>([])
   const [activeTickets, setActiveTickets] = useState<ActiveTicket[]>([])
   const [isActiveTasksPanelCollapsed, setIsActiveTasksPanelCollapsed] = useState(false)
+  const [wsNewItemIds, setWsNewItemIds] = useState<Set<string>>(new Set())
+  const [wsRemovedItemIds, setWsRemovedItemIds] = useState<Set<string>>(new Set())
+  const wsTriggeredReloadRef = useRef(false)
+  const activeTasksRef = useRef<ActiveTask[]>([])
+  const activeTicketsRef = useRef<ActiveTicket[]>([])
   const activeTurnIdRef = useRef<string | null>(null)
   const messagesEndRef = useRef<HTMLDivElement>(null)
   const inputRef = useRef<HTMLTextAreaElement>(null)
@@ -950,8 +956,13 @@ export function BuildScreen({ user, onLogout, workingDirectory: initialWorkingDi
     if (!selectedProject?.id || !activeWorkspaceProp?.id) {
       setActiveTasks([])
       setActiveTickets([])
+      activeTasksRef.current = []
+      activeTicketsRef.current = []
       return
     }
+
+    const isWsTriggered = wsTriggeredReloadRef.current
+    wsTriggeredReloadRef.current = false
 
     try {
       const [tasksResult, ticketsResult] = await Promise.all([
@@ -959,11 +970,70 @@ export function BuildScreen({ user, onLogout, workingDirectory: initialWorkingDi
         window.api.fetchActiveTickets(activeWorkspaceProp.id),
       ])
 
-      setActiveTasks(tasksResult.success ? tasksResult.data : [])
-      setActiveTickets(ticketsResult.success ? ticketsResult.data : [])
+      const newTasks = tasksResult.success ? tasksResult.data : []
+      const newTickets = ticketsResult.success ? ticketsResult.data : []
+
+      // Detect new & removed items when reload was triggered by a WebSocket event
+      if (isWsTriggered) {
+        const prevTasks = activeTasksRef.current
+        const prevTickets = activeTicketsRef.current
+        const oldTaskIds = new Set(prevTasks.map(t => t.id))
+        const oldTicketIds = new Set(prevTickets.map(t => t.id))
+        const newTaskIds = new Set(newTasks.map(t => t.id))
+        const newTicketIds = new Set(newTickets.map(t => t.id))
+
+        // Items that appeared
+        const addedIds = new Set<string>()
+        for (const t of newTasks) {
+          if (!oldTaskIds.has(t.id)) addedIds.add(t.id)
+        }
+        for (const t of newTickets) {
+          if (!oldTicketIds.has(t.id)) addedIds.add(t.id)
+        }
+
+        // Items that disappeared
+        const removedIds = new Set<string>()
+        for (const t of prevTasks) {
+          if (!newTaskIds.has(t.id)) removedIds.add(t.id)
+        }
+        for (const t of prevTickets) {
+          if (!newTicketIds.has(t.id)) removedIds.add(t.id)
+        }
+
+        // Trigger enter animation for new items
+        if (addedIds.size > 0) {
+          setWsNewItemIds(addedIds)
+          setTimeout(() => setWsNewItemIds(new Set()), 2000)
+        }
+
+        // Trigger exit animation for removed items — keep them in DOM briefly
+        if (removedIds.size > 0) {
+          setWsRemovedItemIds(removedIds)
+          const removedTasks = prevTasks.filter(t => removedIds.has(t.id))
+          const removedTickets = prevTickets.filter(t => removedIds.has(t.id))
+          setActiveTasks([...newTasks, ...removedTasks])
+          setActiveTickets([...newTickets, ...removedTickets])
+          // After exit animation, clean up to final state
+          setTimeout(() => {
+            setWsRemovedItemIds(new Set())
+            setActiveTasks(newTasks)
+            setActiveTickets(newTickets)
+            activeTasksRef.current = newTasks
+            activeTicketsRef.current = newTickets
+          }, 800)
+          return
+        }
+      }
+
+      setActiveTasks(newTasks)
+      setActiveTickets(newTickets)
+      activeTasksRef.current = newTasks
+      activeTicketsRef.current = newTickets
     } catch {
       setActiveTasks([])
       setActiveTickets([])
+      activeTasksRef.current = []
+      activeTicketsRef.current = []
     }
   }, [selectedProject?.id, activeWorkspaceProp?.id])
 
@@ -981,9 +1051,11 @@ export function BuildScreen({ user, onLogout, workingDirectory: initialWorkingDi
     let pusher: Pusher | null = null
 
     const connectWS = async () => {
+      setWsStatus('connecting')
       const result = await window.api.getWebSocketConfig()
       if (!result.success || !result.config) {
         console.warn('[WebSocket] Failed to get config:', result.error)
+        setWsStatus('error')
         return
       }
 
@@ -1030,10 +1102,15 @@ export function BuildScreen({ user, onLogout, workingDirectory: initialWorkingDi
       })
 
       pusher.connection.bind('connected', () => {
-        console.log('[WebSocket] Connected to Reverb')
+        console.log('[WebSocket] Connected to Reverb, socket_id:', pusher?.connection.socket_id)
+        setWsStatus('connected')
+      })
+      pusher.connection.bind('disconnected', () => {
+        setWsStatus('disconnected')
       })
       pusher.connection.bind('error', (err: any) => {
         console.error('[WebSocket] Connection error:', err)
+        setWsStatus('error')
       })
 
       // Subscribe to workspace channel
@@ -1047,6 +1124,7 @@ export function BuildScreen({ user, onLogout, workingDirectory: initialWorkingDi
       wsChannel.bind('WorkspaceDataUpdated', (data: any) => {
         console.log('[WebSocket] WorkspaceDataUpdated:', data)
         if (data.type === 'task' || data.type === 'ticket') {
+          wsTriggeredReloadRef.current = true
           loadActiveTasks()
         }
       })
@@ -1059,6 +1137,7 @@ export function BuildScreen({ user, onLogout, workingDirectory: initialWorkingDi
         pusher.disconnect()
         console.log('[WebSocket] Disconnected')
       }
+      setWsStatus('disconnected')
     }
   }, [activeWorkspaceProp?.id, loadActiveTasks])
 
@@ -2510,6 +2589,7 @@ You MUST focus your work within these folders. When reading, writing, editing, o
           skillsLastSync={skillsLastSync}
           isSyncingSkills={isSyncingSkills}
           onSyncSkills={handleSyncSkills}
+          wsStatus={wsStatus}
         />
         <Header
           workingDirectory={null}
@@ -3482,6 +3562,7 @@ You MUST focus your work within these folders. When reading, writing, editing, o
         skillsLastSync={skillsLastSync}
         isSyncingSkills={isSyncingSkills}
         onSyncSkills={handleSyncSkills}
+        wsStatus={wsStatus}
       />
       <Header
         workingDirectory={workingDirectory}
@@ -3569,10 +3650,11 @@ You MUST focus your work within these folders. When reading, writing, editing, o
                             <div className="flex flex-col gap-1.5">
                               {ownerTasks.map(task => {
                                 const pStyle = priorityColors[task.priority] || 'border-brand-border/30 text-brand-text-dim'
+                                const wsClass = wsNewItemIds.has(task.id) ? ' ws-enter' : wsRemovedItemIds.has(task.id) ? ' ws-exit' : ''
                                 return (
                                   <div
                                     key={task.id}
-                                    className="rounded-lg border border-brand-border/25 bg-brand-card/40 px-2.5 py-2"
+                                    className={`rounded-lg border border-brand-border bg-brand-card/40 px-2.5 py-2${wsClass}`}
                                   >
                                     <div className="mb-1 flex items-center gap-1.5">
                                       {task.status === 'in_progress'
@@ -3585,15 +3667,29 @@ You MUST focus your work within these folders. When reading, writing, editing, o
                                       </span>
                                     </div>
                                     <span className="block text-[11px] font-medium leading-snug text-brand-text line-clamp-2">{task.title}</span>
+                                    <button
+                                      onClick={(e) => {
+                                        e.stopPropagation()
+                                        const parts = [`Work on this task: ${task.title}`]
+                                        if (task.description) parts.push(`\nDescription:\n${task.description}`)
+                                        if (task.ai_analysis) parts.push(`\nAI Analysis:\n${task.ai_analysis}`)
+                                        handleSend(parts.join('\n'), `Work on task: ${task.title}`)
+                                      }}
+                                      className="mt-1.5 flex w-full cursor-pointer items-center justify-center gap-1 rounded-md border border-brand-purple/30 bg-brand-purple/10 px-2 py-1 text-[10px] font-semibold text-brand-purple-soft transition-all hover:border-brand-purple/50 hover:bg-brand-purple/20"
+                                    >
+                                      <Zap size={10} />
+                                      Work on this
+                                    </button>
                                   </div>
                                 )
                               })}
                               {ownerTickets.map(ticket => {
                                 const pStyle = priorityColors[ticket.priority] || 'border-brand-border/30 text-brand-text-dim'
+                                const wsClass = wsNewItemIds.has(ticket.id) ? ' ws-enter' : wsRemovedItemIds.has(ticket.id) ? ' ws-exit' : ''
                                 return (
                                   <div
                                     key={ticket.id}
-                                    className="rounded-lg border border-brand-border/25 bg-brand-card/40 px-2.5 py-2"
+                                    className={`rounded-lg border border-brand-border bg-brand-card/40 px-2.5 py-2${wsClass}`}
                                   >
                                     <div className="mb-1 flex items-center gap-1.5">
                                       <Ticket size={11} className="shrink-0 text-brand-purple-soft/60" />
@@ -3603,6 +3699,19 @@ You MUST focus your work within these folders. When reading, writing, editing, o
                                       </span>
                                     </div>
                                     <span className="block text-[11px] font-medium leading-snug text-brand-text line-clamp-2">{ticket.subject}</span>
+                                    <button
+                                      onClick={(e) => {
+                                        e.stopPropagation()
+                                        const parts = [`Work on this ticket (${ticket.reference}): ${ticket.subject}`]
+                                        if (ticket.description) parts.push(`\nDescription:\n${ticket.description}`)
+                                        if (ticket.investigation) parts.push(`\nInvestigation:\n${ticket.investigation}`)
+                                        handleSend(parts.join('\n'), `Work on ticket: ${ticket.reference}`)
+                                      }}
+                                      className="mt-1.5 flex w-full cursor-pointer items-center justify-center gap-1 rounded-md border border-brand-purple/30 bg-brand-purple/10 px-2 py-1 text-[10px] font-semibold text-brand-purple-soft transition-all hover:border-brand-purple/50 hover:bg-brand-purple/20"
+                                    >
+                                      <Zap size={10} />
+                                      Work on this
+                                    </button>
                                   </div>
                                 )
                               })}
@@ -3610,7 +3719,7 @@ You MUST focus your work within these folders. When reading, writing, editing, o
                           )}
 
                           {/* Separator between owners */}
-                          <div className="border-t border-brand-border/15" />
+                          <div className="border-t border-brand-border/40" />
                         </div>
                       )
                     })}
