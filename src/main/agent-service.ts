@@ -84,6 +84,8 @@ export interface StreamEvent {
   data: Record<string, unknown>
   /** Session ID that emitted this event — used by the renderer to filter cross-project events */
   sessionId?: string
+  /** Turn ID that emitted this event — used by the renderer to route events to the correct turn */
+  turnId?: string
 }
 
 interface QueuedMessage {
@@ -164,6 +166,8 @@ interface Session {
   meta: SessionMeta | null
   /** Tracks the current streaming content block type (for distinguishing thinking vs text block stops) */
   _activeBlockType?: string | null
+  /** Input tokens from the last assistant message (API call) — represents current context window usage */
+  _lastInputTokens?: number
 }
 
 const DEFAULT_TOOLS = ['Read', 'Write', 'Edit', 'Glob', 'Grep', 'Bash', 'mcp__customTools__code_review', 'mcp__customTools__ask_user']
@@ -560,12 +564,13 @@ Please proceed to complete the user's request using the appropriate tools.`
       }
     }
 
-    // Wrap onEvent to inject sessionId into every stream event
-    // so the renderer can filter out events from stale/other sessions.
+    // Wrap onEvent to inject sessionId and turnId into every stream event
+    // so the renderer can filter out events from stale/other sessions
+    // and route events to the correct turn (even if activeTurnIdRef is cleared).
     // Also accumulate turn data in the main process and auto-save.
     const emitEvent = (event: StreamEvent): void => {
       this.accumulateTurnEvent(session, event)
-      onEvent({ ...event, sessionId: session.id })
+      onEvent({ ...event, sessionId: session.id, turnId })
     }
 
     try {
@@ -1148,11 +1153,7 @@ Please proceed to complete the user's request using the appropriate tools.`
     session: Session,
     onEvent: (event: StreamEvent) => void
   ): void {
-    // Debug: log all message types and their UUIDs for checkpoint tracking
     const msgAny = message as any
-    if (msgAny.uuid) {
-      console.log(`[AgentService] Message type=${message.type} subtype=${msgAny.subtype || ''} uuid=${msgAny.uuid}`)
-    }
 
     switch (message.type) {
       case 'system':
@@ -1191,7 +1192,15 @@ Please proceed to complete the user's request using the appropriate tools.`
       case 'assistant': {
         session.sdkSessionId = message.session_id
 
+        // Track the usage from EACH assistant message (API call).
+        // The last assistant message's input tokens represents the current context window usage.
         const assistantMessage = message.message
+        if (assistantMessage?.usage) {
+          const usage = assistantMessage.usage as any
+          session._lastInputTokens = (usage.input_tokens || 0)
+            + (usage.cache_read_input_tokens || 0)
+            + (usage.cache_creation_input_tokens || 0)
+        }
         if (assistantMessage?.content) {
           for (const block of assistantMessage.content) {
             if (block.type === 'text') {
@@ -1219,9 +1228,6 @@ Please proceed to complete the user's request using the appropriate tools.`
         // With replay-user-messages enabled, SDKUserMessageReplay messages have
         // guaranteed UUIDs that serve as checkpoint restore points.
         const userMsgUuid = (message as any).uuid as string | undefined
-        const isReplay = (message as any).isReplay === true
-        const isSynthetic = (message as any).isSynthetic === true
-        console.log(`[AgentService] User message: uuid=${userMsgUuid} isReplay=${isReplay} isSynthetic=${isSynthetic} parent_tool_use_id=${(message as any).parent_tool_use_id}`)
 
         if (userMsgUuid) {
           onEvent({
@@ -1262,6 +1268,23 @@ Please proceed to complete the user's request using the appropriate tools.`
         // SDKPartialAssistantMessage — real-time streaming deltas
         const streamEvent = (message as any).event
         if (streamEvent) {
+          // Capture usage from message_start (contains input_tokens for this API call)
+          // and message_delta (contains output_tokens at the end)
+          if (streamEvent.type === 'message_start' && streamEvent.message?.usage) {
+            const usage = streamEvent.message.usage
+            session._lastInputTokens = (usage.input_tokens || 0)
+              + (usage.cache_read_input_tokens || 0)
+              + (usage.cache_creation_input_tokens || 0)
+          } else if (streamEvent.type === 'message_delta' && streamEvent.usage) {
+            // message_delta at end of stream may also have usage updates
+            const usage = streamEvent.usage
+            if (usage.input_tokens || usage.cache_read_input_tokens || usage.cache_creation_input_tokens) {
+              session._lastInputTokens = (usage.input_tokens || 0)
+                + (usage.cache_read_input_tokens || 0)
+                + (usage.cache_creation_input_tokens || 0)
+            }
+          }
+
           if (streamEvent.type === 'content_block_start') {
             const block = streamEvent.content_block
             if (block?.type === 'thinking') {
@@ -1314,7 +1337,22 @@ Please proceed to complete the user's request using the appropriate tools.`
         break
       }
 
-      case 'result':
+      case 'result': {
+        // Use the LAST assistant message's input tokens (tracked in session._lastInputTokens)
+        // rather than cumulative modelUsage — the last API call's input represents the current
+        // context window fill level.
+        const totalInputTokens = session._lastInputTokens || 0
+
+        // Get context window from modelUsage
+        let contextWindow = 200000
+        if (msgAny.modelUsage) {
+          for (const model of Object.keys(msgAny.modelUsage)) {
+            if (msgAny.modelUsage[model].contextWindow) {
+              contextWindow = msgAny.modelUsage[model].contextWindow
+            }
+          }
+        }
+
         onEvent({
           event: 'done',
           data: {
@@ -1324,10 +1362,13 @@ Please proceed to complete the user's request using the appropriate tools.`
             isError: message.is_error,
             numTurns: message.num_turns,
             costUsd: message.total_cost_usd,
-            result: message.subtype === 'success' ? (message as { result?: string }).result : undefined
+            result: message.subtype === 'success' ? (message as { result?: string }).result : undefined,
+            inputTokens: totalInputTokens,
+            contextWindow
           }
         })
         break
+      }
     }
   }
 }

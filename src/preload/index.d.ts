@@ -3,6 +3,8 @@ export interface StreamEvent {
   data: Record<string, unknown>
   /** Session ID that emitted this event — used to filter cross-project events */
   sessionId?: string
+  /** Turn ID that emitted this event — used to route events to the correct turn */
+  turnId?: string
 }
 
 export interface UserQuestion {
