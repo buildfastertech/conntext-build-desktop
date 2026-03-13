@@ -146,19 +146,12 @@ export function BuildScreen({ user, onLogout, workingDirectory: initialWorkingDi
     scrollToBottom()
   }, [turns])
 
-  // Estimate context tokens from turns (~4 chars per token)
-  useEffect(() => {
-    let charCount = 0
-    for (const turn of turns) {
-      charCount += turn.userMessage.length
-      for (const block of turn.textBlocks) charCount += block.length
-      for (const evt of turn.toolEvents) {
-        if (evt.output) charCount += evt.output.length
-        if (evt.input) charCount += JSON.stringify(evt.input).length
-      }
-    }
-    setContextTokens(Math.round(charCount / 4))
-  }, [turns])
+  const [contextWindow, setContextWindow] = useState(200000)
+
+  const contextTokensRef = useRef(0)
+  const contextWindowRef = useRef(200000)
+  useEffect(() => { contextTokensRef.current = contextTokens }, [contextTokens])
+  useEffect(() => { contextWindowRef.current = contextWindow }, [contextWindow])
 
   // Keep turnsRef in sync with turns state
   useEffect(() => {
@@ -229,6 +222,7 @@ export function BuildScreen({ user, onLogout, workingDirectory: initialWorkingDi
     setCurrentSessionTitle('')
     setSessions([])
     setContextTokens(0)
+    setContextWindow(200000)
     setActiveFeatureId(null)
     setActiveFeatureTitle(null)
     activeFeatureIdRef.current = null
@@ -321,6 +315,9 @@ export function BuildScreen({ user, onLogout, workingDirectory: initialWorkingDi
               setCurrentSessionTitle(sessionData.title)
               setActiveFeatureId(sessionData.featureId ?? null)
               setActiveFeatureTitle(sessionData.featureTitle ?? null)
+              // Restore token count from saved session
+              if (sessionData.contextTokens != null) setContextTokens(sessionData.contextTokens)
+              if (sessionData.contextWindow != null) setContextWindow(sessionData.contextWindow)
 
               // Check if there's an incomplete turn we should reconnect to
               const storedActiveTurnId = localStorage.getItem('activeTurnId')
@@ -510,7 +507,9 @@ export function BuildScreen({ user, onLogout, workingDirectory: initialWorkingDi
         endTime: Date.now(),
         workingDirectory: workingDirectoryRef.current,
         turns: allTurns,
-        totalCost: allTurns.reduce((sum, t) => sum + (t.costUsd || 0), 0)
+        totalCost: allTurns.reduce((sum, t) => sum + (t.costUsd || 0), 0),
+        contextTokens: contextTokensRef.current,
+        contextWindow: contextWindowRef.current
       }
       window.api.saveSession(sessionData).catch(err =>
         console.error('[BuildScreen] Failed to save session:', err)
@@ -577,8 +576,15 @@ export function BuildScreen({ user, onLogout, workingDirectory: initialWorkingDi
           setIsCompacting(true)
         } else if (type === 'compact') {
           setIsCompacting(false)
-          // After compaction, the context was reset — use a reduced estimate
-          setContextTokens(prev => Math.round(prev * 0.15))
+          // After compaction, context is significantly reduced.
+          // The preTokens value tells us how many tokens were in context BEFORE compaction.
+          // Compaction typically reduces to ~10-15% of original, so estimate the post-compact size.
+          const preTokens = event.data.preTokens as number | undefined
+          if (preTokens) {
+            setContextTokens(Math.round(preTokens * 0.15))
+          } else {
+            setContextTokens(prev => Math.round(prev * 0.15))
+          }
         } else if (type === 'checkpoint') {
           // Store the FIRST checkpoint UUID on the active turn for file rewind.
           // The first user message UUID represents the state before any changes.
@@ -596,7 +602,21 @@ export function BuildScreen({ user, onLogout, workingDirectory: initialWorkingDi
         return
       }
 
-      const turnId = activeTurnIdRef.current
+      // Handle context token updates from done events BEFORE turnId check,
+      // since token data is session-level and doesn't need a turn reference.
+      if (event.event === 'done') {
+        if (event.data.inputTokens != null && (event.data.inputTokens as number) > 0) {
+          setContextTokens(event.data.inputTokens as number)
+        }
+        if (event.data.contextWindow) {
+          setContextWindow(event.data.contextWindow as number)
+        }
+      }
+
+      // Use turnId from the event (injected by main process) as primary source.
+      // This avoids a race condition where .finally() clears activeTurnIdRef.current
+      // before late-arriving stream events (text, done) are processed.
+      const turnId = event.turnId || activeTurnIdRef.current
       if (!turnId) return
 
       switch (event.event) {
@@ -612,7 +632,15 @@ export function BuildScreen({ user, onLogout, workingDirectory: initialWorkingDi
                 ? countToolGroups(t.toolEvents)
                 : 0
               while (blocks.length <= expectedBlockIdx) blocks.push('')
-              blocks[expectedBlockIdx] += text
+              // The 'text' event from the SDK assistant message contains the full block text.
+              // If partial_text streaming already accumulated a longer version (due to React
+              // state batching or timing), prefer the longer content to avoid truncation.
+              const partialText = t.currentPartialText ?? ''
+              if (partialText.length > text.length && text.length > 0) {
+                blocks[expectedBlockIdx] = partialText
+              } else {
+                blocks[expectedBlockIdx] = text
+              }
               // Only clear currentPartialText if we actually wrote meaningful text.
               // An empty 'text' event (e.g. from an assistant message with only tool calls)
               // should not wipe out accumulated partial_text streaming content.
@@ -740,14 +768,15 @@ export function BuildScreen({ user, onLogout, workingDirectory: initialWorkingDi
               if (t.id !== turnId) return t
 
               // If currentPartialText has content that wasn't committed to textBlocks
-              // (e.g. partial_text events arrived but no 'text' event followed), commit it now
+              // (e.g. partial_text events arrived but no 'text' event followed), commit it now.
+              // Also prefer currentPartialText when it's longer than what the text event wrote,
+              // as streaming deltas may have accumulated more content than the final assistant message.
               const blocks = [...t.textBlocks]
               if (t.currentPartialText) {
                 const toolGroupCount = t.toolEvents.filter(e => e.type === 'tool_result').length
                 const expectedBlockIdx = toolGroupCount
                 while (blocks.length <= expectedBlockIdx) blocks.push('')
-                // Only commit if the text block is empty (avoid duplication with 'text' events)
-                if (!blocks[expectedBlockIdx]) {
+                if (!blocks[expectedBlockIdx] || t.currentPartialText.length > blocks[expectedBlockIdx].length) {
                   blocks[expectedBlockIdx] = t.currentPartialText
                 }
               }
@@ -779,6 +808,7 @@ export function BuildScreen({ user, onLogout, workingDirectory: initialWorkingDi
               }
             })
           )
+          // Token updates handled before turnId check (session-level, not turn-level)
           // Clear active turn from localStorage when done
           if (localStorage.getItem('activeTurnId') === turnId) {
             localStorage.removeItem('activeTurnId')
@@ -1471,7 +1501,9 @@ This file stores important context and information for the AI agent.
             endTime: Date.now(),
             workingDirectory,
             turns: [...turns, newTurn],
-            totalCost: turns.reduce((sum, t) => sum + (t.costUsd || 0), 0)
+            totalCost: turns.reduce((sum, t) => sum + (t.costUsd || 0), 0),
+            contextTokens: contextTokensRef.current,
+            contextWindow: contextWindowRef.current
           }
           window.api.saveSession(sessionData).catch(err =>
             console.error('[BuildScreen] Failed to save session immediately:', err)
@@ -1603,7 +1635,9 @@ This file stores important context and information for the AI agent.
             endTime: Date.now(),
             workingDirectory,
             turns: [...turns, newTurn],
-            totalCost: turns.reduce((sum, t) => sum + (t.costUsd || 0), 0)
+            totalCost: turns.reduce((sum, t) => sum + (t.costUsd || 0), 0),
+            contextTokens: contextTokensRef.current,
+            contextWindow: contextWindowRef.current
           }
           window.api.saveSession(sessionData).catch(err =>
             console.error('[BuildScreen] Failed to save session immediately:', err)
@@ -1758,7 +1792,9 @@ You MUST focus your work within these folders. When reading, writing, editing, o
         endTime: Date.now(),
         workingDirectory,
         turns: [...turns, newTurn],
-        totalCost: turns.reduce((sum, t) => sum + (t.costUsd || 0), 0)
+        totalCost: turns.reduce((sum, t) => sum + (t.costUsd || 0), 0),
+        contextTokens: contextTokensRef.current,
+        contextWindow: contextWindowRef.current
       }
       window.api.saveSession(sessionData).catch(err =>
         console.error('[BuildScreen] Failed to save session immediately:', err)
@@ -1947,7 +1983,9 @@ You MUST focus your work within these folders. When reading, writing, editing, o
       endTime: Date.now(),
       workingDirectory,
       turns,
-      totalCost
+      totalCost,
+      contextTokens,
+      contextWindow
     }
 
     const result = await window.api.saveSession(sessionData)
@@ -2009,6 +2047,9 @@ You MUST focus your work within these folders. When reading, writing, editing, o
       setCurrentSessionTitle(sessionData.title)
       setActiveFeatureId(sessionData.featureId ?? null)
       setActiveFeatureTitle(sessionData.featureTitle ?? null)
+      // Restore token count from saved session
+      if (sessionData.contextTokens != null) setContextTokens(sessionData.contextTokens)
+      if (sessionData.contextWindow != null) setContextWindow(sessionData.contextWindow)
 
       // Check if this session has an incomplete turn that's still running
       const incompleteTurn = sessionData.turns.find((t: Turn) => !t.isComplete)
@@ -2062,6 +2103,8 @@ You MUST focus your work within these folders. When reading, writing, editing, o
     setCurrentSessionTitle('')
     setPastedImages([])
     setInput('')
+    setContextTokens(0)
+    setContextWindow(200000)
     // Clear feature context — new session only links to project
     setActiveFeatureId(null)
     setActiveFeatureTitle(null)
@@ -3606,7 +3649,7 @@ You MUST focus your work within these folders. When reading, writing, editing, o
                   <span>
                     ~{contextTokens >= 1000 ? `${(contextTokens / 1000).toFixed(1)}k` : contextTokens} tokens
                     {' '}
-                    <span className="text-white/25">/ ~200k</span>
+                    <span className="text-white/25">/ ~{contextWindow >= 1000 ? `${Math.round(contextWindow / 1000)}k` : contextWindow}</span>
                   </span>
                 )}
               </div>
