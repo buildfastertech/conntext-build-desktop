@@ -830,6 +830,10 @@ ipcMain.handle('agent:rewind-files', async (_event, sessionId: string, userMessa
   return agentService.rewindFiles(sessionId, userMessageId, dryRun)
 })
 
+ipcMain.handle('agent:add-marker', async (_event, sessionId: string, marker: { type: string; skillName?: string; data?: Record<string, unknown> }) => {
+  return { success: agentService.addMarker(sessionId, marker as any) }
+})
+
 ipcMain.handle('agent:create-session', async (_event, params: {
   workingDirectory: string
   systemPrompt?: string

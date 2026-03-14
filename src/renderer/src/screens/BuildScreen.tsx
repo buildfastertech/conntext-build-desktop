@@ -1613,6 +1613,7 @@ This file stores important context and information for the AI agent.
 
       if (skillPatterns.some(pattern => pattern.test(command))) {
         // This is a skill command - forward to agent to run the skill
+        const skillName = command.replace('/', '')
         const skillPrompt = `Run the ${trimmedInput} skill`
 
         // Clear input
@@ -1642,6 +1643,18 @@ This file stores important context and information for the AI agent.
         })
 
         localStorage.setItem('activeTurnId', turnId)
+
+        // Inject a skill_started marker into the session timeline
+        if (sessionId) {
+          window.api.addMarker(sessionId, {
+            type: 'skill_started',
+            skillName,
+            data: {
+              featureId: activeFeatureIdRef.current ?? undefined,
+              args: args || undefined
+            }
+          }).catch(err => console.error('[BuildScreen] Failed to add skill_started marker:', err))
+        }
 
         // Save session immediately
         if (workingDirectory && sessionId) {
@@ -1676,7 +1689,24 @@ This file stores important context and information for the AI agent.
           projectId: projectId ?? null,
           featureId: activeFeatureIdRef.current ?? null,
           previousTurns: turns.filter(t => t.isComplete)
+        }).then(() => {
+          // Skill turn completed successfully — inject skill_completed marker
+          if (sessionId) {
+            window.api.addMarker(sessionId, {
+              type: 'skill_completed',
+              skillName
+            }).catch(err => console.error('[BuildScreen] Failed to add skill_completed marker:', err))
+          }
         }).catch(() => {
+          // Skill turn failed — inject skill_failed marker
+          if (sessionId) {
+            window.api.addMarker(sessionId, {
+              type: 'skill_failed',
+              skillName,
+              data: { errorMessage: 'Failed to send message' }
+            }).catch(err => console.error('[BuildScreen] Failed to add skill_failed marker:', err))
+          }
+
           setTurns((prev) =>
             prev.map((t) =>
               t.id === turnId
