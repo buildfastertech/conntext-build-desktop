@@ -19,6 +19,9 @@ export default defineConfig({
     plugins: [externalizeDepsPlugin()]
   },
   renderer: {
+    server: {
+      port: 5200
+    },
     assetsInclude: ['**/*.riv'],
     resolve: {
       alias: {

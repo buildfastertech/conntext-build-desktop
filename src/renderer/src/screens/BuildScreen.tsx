@@ -16,10 +16,10 @@ import { FolderSelector } from '../components/FolderSelector'
 import { RiveLoader } from '../components/RiveLoader'
 
 const AVAILABLE_MODELS = [
-  { value: 'claude-sonnet-4-5-20250929', label: 'Sonnet 4.5', description: 'Fast & capable' },
-  { value: 'claude-sonnet-4-6', label: 'Sonnet 4.6', description: 'Latest Sonnet' },
-  { value: 'claude-opus-4-6', label: 'Opus 4.6', description: 'Most capable' },
-  { value: 'claude-haiku-4-5-20251001', label: 'Haiku 4.5', description: 'Fastest' },
+  { value: 'claude-sonnet-4-5-20250929', label: 'Sonnet 4.5', description: 'Fast & capable', contextWindow: 200000 },
+  { value: 'claude-sonnet-4-6', label: 'Sonnet 4.6', description: 'Latest Sonnet', contextWindow: 200000 },
+  { value: 'claude-opus-4-6', label: 'Opus 4.6', description: '1M context window', contextWindow: 1000000 },
+  { value: 'claude-haiku-4-5-20251001', label: 'Haiku 4.5', description: 'Fastest', contextWindow: 200000 },
 ]
 
 interface BuildScreenProps {
@@ -146,10 +146,13 @@ export function BuildScreen({ user, onLogout, workingDirectory: initialWorkingDi
     scrollToBottom()
   }, [turns])
 
-  const [contextWindow, setContextWindow] = useState(200000)
+  const [contextWindow, setContextWindow] = useState(() => {
+    const modelConfig = AVAILABLE_MODELS.find(m => m.value === selectedModel)
+    return modelConfig?.contextWindow || 200000
+  })
 
   const contextTokensRef = useRef(0)
-  const contextWindowRef = useRef(200000)
+  const contextWindowRef = useRef(AVAILABLE_MODELS.find(m => m.value === selectedModel)?.contextWindow || 200000)
   useEffect(() => { contextTokensRef.current = contextTokens }, [contextTokens])
   useEffect(() => { contextWindowRef.current = contextWindow }, [contextWindow])
 
@@ -199,6 +202,14 @@ export function BuildScreen({ user, onLogout, workingDirectory: initialWorkingDi
     localStorage.setItem('selectedModel', selectedModel)
   }, [selectedModel])
 
+  // Update context window based on selected model
+  useEffect(() => {
+    const modelConfig = AVAILABLE_MODELS.find(m => m.value === selectedModel)
+    if (modelConfig?.contextWindow) {
+      setContextWindow(modelConfig.contextWindow)
+    }
+  }, [selectedModel])
+
   // Persist folder selections to localStorage (scoped per project)
   useEffect(() => {
     if (projectId) localStorage.setItem(`activeFolders:${projectId}`, JSON.stringify(activeFolders))
@@ -222,7 +233,7 @@ export function BuildScreen({ user, onLogout, workingDirectory: initialWorkingDi
     setCurrentSessionTitle('')
     setSessions([])
     setContextTokens(0)
-    setContextWindow(200000)
+    setContextWindow(AVAILABLE_MODELS.find(m => m.value === selectedModel)?.contextWindow || 200000)
     setActiveFeatureId(null)
     setActiveFeatureTitle(null)
     activeFeatureIdRef.current = null
@@ -317,7 +328,10 @@ export function BuildScreen({ user, onLogout, workingDirectory: initialWorkingDi
               setActiveFeatureTitle(sessionData.featureTitle ?? null)
               // Restore token count from saved session
               if (sessionData.contextTokens != null) setContextTokens(sessionData.contextTokens)
-              if (sessionData.contextWindow != null) setContextWindow(sessionData.contextWindow)
+              if (sessionData.contextWindow != null) {
+                const modelContextWindow = AVAILABLE_MODELS.find(m => m.value === selectedModelRef.current)?.contextWindow || 200000
+                setContextWindow(Math.max(sessionData.contextWindow, modelContextWindow))
+              }
 
               // Check if there's an incomplete turn we should reconnect to
               const storedActiveTurnId = localStorage.getItem('activeTurnId')
@@ -609,7 +623,12 @@ export function BuildScreen({ user, onLogout, workingDirectory: initialWorkingDi
           setContextTokens(event.data.inputTokens as number)
         }
         if (event.data.contextWindow) {
-          setContextWindow(event.data.contextWindow as number)
+          // Use model config's context window if it's larger than what the SDK reports,
+          // since the SDK may report a smaller default (e.g. 200k) even for models
+          // with larger context windows like Opus 4.6 (1M)
+          const modelContextWindow = AVAILABLE_MODELS.find(m => m.value === selectedModelRef.current)?.contextWindow || 200000
+          const sdkContextWindow = event.data.contextWindow as number
+          setContextWindow(Math.max(sdkContextWindow, modelContextWindow))
         }
       }
 
@@ -1594,6 +1613,7 @@ This file stores important context and information for the AI agent.
 
       if (skillPatterns.some(pattern => pattern.test(command))) {
         // This is a skill command - forward to agent to run the skill
+        const skillName = command.replace('/', '')
         const skillPrompt = `Run the ${trimmedInput} skill`
 
         // Clear input
@@ -1623,6 +1643,18 @@ This file stores important context and information for the AI agent.
         })
 
         localStorage.setItem('activeTurnId', turnId)
+
+        // Inject a skill_started marker into the session timeline
+        if (sessionId) {
+          window.api.addMarker(sessionId, {
+            type: 'skill_started',
+            skillName,
+            data: {
+              featureId: activeFeatureIdRef.current ?? undefined,
+              args: args || undefined
+            }
+          }).catch(err => console.error('[BuildScreen] Failed to add skill_started marker:', err))
+        }
 
         // Save session immediately
         if (workingDirectory && sessionId) {
@@ -1657,7 +1689,24 @@ This file stores important context and information for the AI agent.
           projectId: projectId ?? null,
           featureId: activeFeatureIdRef.current ?? null,
           previousTurns: turns.filter(t => t.isComplete)
+        }).then(() => {
+          // Skill turn completed successfully — inject skill_completed marker
+          if (sessionId) {
+            window.api.addMarker(sessionId, {
+              type: 'skill_completed',
+              skillName
+            }).catch(err => console.error('[BuildScreen] Failed to add skill_completed marker:', err))
+          }
         }).catch(() => {
+          // Skill turn failed — inject skill_failed marker
+          if (sessionId) {
+            window.api.addMarker(sessionId, {
+              type: 'skill_failed',
+              skillName,
+              data: { errorMessage: 'Failed to send message' }
+            }).catch(err => console.error('[BuildScreen] Failed to add skill_failed marker:', err))
+          }
+
           setTurns((prev) =>
             prev.map((t) =>
               t.id === turnId
@@ -2049,7 +2098,10 @@ You MUST focus your work within these folders. When reading, writing, editing, o
       setActiveFeatureTitle(sessionData.featureTitle ?? null)
       // Restore token count from saved session
       if (sessionData.contextTokens != null) setContextTokens(sessionData.contextTokens)
-      if (sessionData.contextWindow != null) setContextWindow(sessionData.contextWindow)
+      if (sessionData.contextWindow != null) {
+        const modelContextWindow = AVAILABLE_MODELS.find(m => m.value === selectedModelRef.current)?.contextWindow || 200000
+        setContextWindow(Math.max(sessionData.contextWindow, modelContextWindow))
+      }
 
       // Check if this session has an incomplete turn that's still running
       const incompleteTurn = sessionData.turns.find((t: Turn) => !t.isComplete)
@@ -2104,7 +2156,7 @@ You MUST focus your work within these folders. When reading, writing, editing, o
     setPastedImages([])
     setInput('')
     setContextTokens(0)
-    setContextWindow(200000)
+    setContextWindow(AVAILABLE_MODELS.find(m => m.value === selectedModel)?.contextWindow || 200000)
     // Clear feature context — new session only links to project
     setActiveFeatureId(null)
     setActiveFeatureTitle(null)
@@ -3647,9 +3699,9 @@ You MUST focus your work within these folders. When reading, writing, editing, o
                   </span>
                 ) : (
                   <span>
-                    ~{contextTokens >= 1000 ? `${(contextTokens / 1000).toFixed(1)}k` : contextTokens} tokens
+                    ~{contextTokens >= 1000000 ? `${(contextTokens / 1000000).toFixed(1)}M` : contextTokens >= 1000 ? `${(contextTokens / 1000).toFixed(1)}k` : contextTokens} tokens
                     {' '}
-                    <span className="text-white/25">/ ~{contextWindow >= 1000 ? `${Math.round(contextWindow / 1000)}k` : contextWindow}</span>
+                    <span className="text-white/25">/ ~{contextWindow >= 1000000 ? `${(contextWindow / 1000000).toFixed(contextWindow % 1000000 === 0 ? 0 : 1)}M` : contextWindow >= 1000 ? `${Math.round(contextWindow / 1000)}k` : contextWindow}</span>
                   </span>
                 )}
               </div>

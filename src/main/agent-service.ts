@@ -142,6 +142,7 @@ interface SessionMeta {
   completedTurns: ActiveTurn[]
   projectId?: string | null
   featureId?: string | null
+  markers: SessionMarker[]
 }
 
 interface Session {
@@ -177,6 +178,14 @@ export interface AuthProvider {
   getApiToken(): string | null
 }
 
+export interface SessionMarker {
+  type: 'skill_started' | 'skill_completed' | 'skill_failed' | 'prd_build_started' | 'prd_build_completed' | 'prd_build_failed'
+  timestamp: number
+  afterTurnIndex: number
+  skillName?: string
+  data?: Record<string, unknown>
+}
+
 export interface SessionSaveData {
   sessionId: string
   sdkSessionId?: string | null
@@ -188,6 +197,7 @@ export interface SessionSaveData {
   workingDirectory: string
   turns: unknown[]
   totalCost: number
+  markers?: SessionMarker[]
 }
 
 export class AgentService {
@@ -200,6 +210,27 @@ export class AgentService {
 
   setOnSessionSaved(callback: (data: SessionSaveData) => void): void {
     this.onSessionSaved = callback
+  }
+
+  /**
+   * Add a marker to a session's timeline. Markers are metadata events
+   * (skill start/end, PRD build start/end) that sit alongside turns
+   * to allow pinpointing specific phases when analysing sessions later.
+   */
+  addMarker(sessionId: string, marker: Omit<SessionMarker, 'timestamp' | 'afterTurnIndex'>): boolean {
+    const session = this.sessions.get(sessionId)
+    if (!session?.meta) return false
+
+    const fullMarker: SessionMarker = {
+      ...marker,
+      timestamp: Date.now(),
+      afterTurnIndex: session.meta.completedTurns.length + (session.activeTurn ? 1 : 0) - 1
+    }
+
+    session.meta.markers.push(fullMarker)
+    this.scheduleSave(session)
+    console.log(`[AgentService] Marker added to session ${sessionId}:`, fullMarker.type)
+    return true
   }
 
   setAuthProvider(provider: AuthProvider): void {
@@ -544,7 +575,8 @@ Please proceed to complete the user's request using the appropriate tools.`
         timestamp: Date.now(),
         completedTurns: (params.previousTurns || []) as ActiveTurn[],
         projectId: params.projectId || null,
-        featureId: params.featureId || null
+        featureId: params.featureId || null,
+        markers: []
       }
     } else {
       // Update title if provided
@@ -973,7 +1005,7 @@ Please proceed to complete the user's request using the appropriate tools.`
   setSessionMeta(sessionId: string, meta: { title: string; timestamp: number; completedTurns: ActiveTurn[] }): void {
     const session = this.sessions.get(sessionId)
     if (!session) return
-    session.meta = meta
+    session.meta = { ...meta, markers: session.meta?.markers || [] }
   }
 
   /**
@@ -1124,7 +1156,8 @@ Please proceed to complete the user's request using the appropriate tools.`
       endTime: Date.now(),
       workingDirectory: session.config.workingDirectory,
       turns: allTurns,
-      totalCost: allTurns.reduce((sum, t) => sum + (t.costUsd || 0), 0)
+      totalCost: allTurns.reduce((sum, t) => sum + (t.costUsd || 0), 0),
+      markers: session.meta.markers.length > 0 ? session.meta.markers : undefined
     }
 
     try {

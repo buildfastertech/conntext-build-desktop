@@ -66,6 +66,9 @@ const api = {
   rewindFiles: (sessionId: string, userMessageId: string, dryRun?: boolean) =>
     ipcRenderer.invoke('agent:rewind-files', sessionId, userMessageId, dryRun ?? false),
 
+  addMarker: (sessionId: string, marker: { type: string; skillName?: string; data?: Record<string, unknown> }) =>
+    ipcRenderer.invoke('agent:add-marker', sessionId, marker),
+
   createSession: (params: {
     workingDirectory: string
     systemPrompt?: string

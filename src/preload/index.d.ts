@@ -23,6 +23,25 @@ export interface UserInfo {
   email: string
 }
 
+export interface SessionMarker {
+  type: 'skill_started' | 'skill_completed' | 'skill_failed' | 'prd_build_started' | 'prd_build_completed' | 'prd_build_failed'
+  timestamp: number
+  afterTurnIndex: number
+  skillName?: string
+  data?: {
+    prdPath?: string
+    totalTasks?: number
+    totalSubtasks?: number
+    tasksCompleted?: number
+    tasksFailed?: number
+    tasksSkipped?: number
+    featureId?: string
+    featureTitle?: string
+    errorMessage?: string
+    [key: string]: unknown
+  }
+}
+
 export interface SessionData {
   sessionId: string
   sdkSessionId?: string | null
@@ -35,6 +54,7 @@ export interface SessionData {
   workingDirectory: string
   turns: Turn[]
   totalCost: number
+  markers?: SessionMarker[]
 }
 
 export interface Turn {
@@ -330,6 +350,7 @@ export interface ElectronAPI {
   abortAgent: (sessionId: string) => Promise<{ success: boolean }>
   injectMessage: (sessionId: string, content: string) => Promise<{ injected: boolean }>
   rewindFiles: (sessionId: string, userMessageId: string, dryRun?: boolean) => Promise<RewindFilesResult>
+  addMarker: (sessionId: string, marker: { type: SessionMarker['type']; skillName?: string; data?: SessionMarker['data'] }) => Promise<{ success: boolean }>
 
   createSession: (params: {
     workingDirectory: string
