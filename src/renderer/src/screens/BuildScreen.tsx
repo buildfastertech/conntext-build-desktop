@@ -3,7 +3,7 @@ import { flushSync } from 'react-dom'
 import ReactMarkdown from 'react-markdown'
 import remarkGfm from 'remark-gfm'
 import { toast } from 'sonner'
-import { FolderOpen, Pencil, Check, X, ChevronDown, ChevronUp, RefreshCw, AlertCircle, Layers, Blocks, Lightbulb, Users, Heart, TrendingUp, DollarSign, Cpu, Palette, Link2, Cog, MessageSquare, Hammer, Zap, User, ListTodo, Ticket, Plus } from 'lucide-react'
+import { FolderOpen, Pencil, Check, X, ChevronDown, ChevronUp, RefreshCw, AlertCircle, Layers, Blocks, Lightbulb, Users, Heart, TrendingUp, DollarSign, Cpu, Palette, Link2, Cog, MessageSquare, Hammer, Zap, User, ListTodo, Ticket, Plus, History } from 'lucide-react'
 import Pusher from 'pusher-js'
 import type { StreamEvent, UserInfo, SessionMetadata, Turn, ToolEvent, Workspace, UserQuestion, Project, ProjectFeature, ProductOwner, ActiveTask, ActiveTicket, WebSocketEvent } from '../../../preload/index.d'
 import { ResizablePanes } from '../components/ResizablePanes'
@@ -61,6 +61,8 @@ export function BuildScreen({ user, onLogout, workingDirectory: initialWorkingDi
   const [memoryExists, setMemoryExists] = useState(false)
   const [sessions, setSessions] = useState<SessionMetadata[]>([])
   const [currentSessionTitle, setCurrentSessionTitle] = useState<string>('')
+  const [openTabs, setOpenTabs] = useState<Array<{ sessionId: string; title: string }>>([])
+  const [streamingSessionIds, setStreamingSessionIds] = useState<Set<string>>(new Set())
   const [isActionMenuOpen, setIsActionMenuOpen] = useState(false)
   const [isSettingsOpen, setIsSettingsOpen] = useState(false)
   const [wsStatus, setWsStatus] = useState<'disconnected' | 'connecting' | 'connected' | 'error'>('disconnected')
@@ -131,6 +133,7 @@ export function BuildScreen({ user, onLogout, workingDirectory: initialWorkingDi
   const workingDirectoryRef = useRef<string | null>(null)
   const projectIdRef = useRef<string | null>(projectId ?? null)
   const currentSessionTitleRef = useRef<string>('')
+  const openTabsRef = useRef<Array<{ sessionId: string; title: string }>>([])
 
   const scrollContainerRef = useRef<HTMLDivElement>(null)
   const userHasScrolledUpRef = useRef(false)
@@ -247,6 +250,8 @@ export function BuildScreen({ user, onLogout, workingDirectory: initialWorkingDi
     setSdkSessionId(null)
     setCurrentSessionTitle('')
     setSessions([])
+    setOpenTabs([])
+    openTabsRef.current = []
     setContextTokens(0)
     setContextWindow(AVAILABLE_MODELS.find(m => m.value === selectedModel)?.contextWindow || 200000)
     setActiveFeatureId(null)
@@ -416,18 +421,39 @@ export function BuildScreen({ user, onLogout, workingDirectory: initialWorkingDi
     }
   }, [workingDirectory])
 
-  // Save session ID whenever it changes (global + per-project) and sync with main process
+  // Save session ID whenever it changes (global + per-project)
   useEffect(() => {
     if (sessionId) {
       window.api.saveSessionId(sessionId)
-      window.api.setActiveSession(sessionId).catch(err =>
-        console.warn('[BuildScreen] Failed to set active session in main process:', err)
-      )
       if (projectIdRef.current) {
         window.api.saveProjectSessionId(projectIdRef.current, sessionId)
       }
     }
   }, [sessionId])
+
+  // Sync current session title to its open tab, and ensure the active session always has a tab
+  useEffect(() => {
+    if (!sessionId) return
+    setOpenTabs(prev => {
+      const existingTab = prev.find(t => t.sessionId === sessionId)
+      let updated: Array<{ sessionId: string; title: string }>
+      if (existingTab) {
+        // Update title if it changed
+        if (currentSessionTitle && existingTab.title !== currentSessionTitle) {
+          updated = prev.map(t =>
+            t.sessionId === sessionId ? { ...t, title: currentSessionTitle } : t
+          )
+        } else {
+          return prev // No change needed
+        }
+      } else {
+        // Session has no tab — add one (e.g. on initial load)
+        updated = [...prev, { sessionId, title: currentSessionTitle || 'Session' }]
+      }
+      openTabsRef.current = updated
+      return updated
+    })
+  }, [sessionId, currentSessionTitle])
 
   // Timer for active turn
   useEffect(() => {
@@ -444,6 +470,25 @@ export function BuildScreen({ user, onLogout, workingDirectory: initialWorkingDi
       if (timerRef.current) clearInterval(timerRef.current)
     }
   }, [isStreaming])
+
+  // Track the current session's streaming state in streamingSessionIds for tab indicators
+  useEffect(() => {
+    const sid = sessionIdRef.current
+    if (!sid) return
+    setStreamingSessionIds(prev => {
+      if (isStreaming && !prev.has(sid)) {
+        const next = new Set(prev)
+        next.add(sid)
+        return next
+      }
+      if (!isStreaming && prev.has(sid)) {
+        const next = new Set(prev)
+        next.delete(sid)
+        return next
+      }
+      return prev
+    })
+  }, [isStreaming, sessionId])
 
   // Auto-save session after each turn completes
   useEffect(() => {
@@ -559,11 +604,12 @@ export function BuildScreen({ user, onLogout, workingDirectory: initialWorkingDi
 
     // Send the message with conversation history
     console.log('[Queue] Sending queued message to API')
+    const queueSessionId = sessionIdRef.current
     window.api.sendMessage({
       content: newTurn.userMessage,
       images: messageToProcess.images,
       workingDirectory: workingDirectoryRef.current!,
-      sessionId: sessionIdRef.current ?? undefined,
+      sessionId: queueSessionId ?? undefined,
       sdkSessionId: sdkSessionIdRef.current ?? undefined,
       model: selectedModelRef.current,
       turnId: newTurn.id,
@@ -590,9 +636,12 @@ export function BuildScreen({ user, onLogout, workingDirectory: initialWorkingDi
       if (sessionIdRef.current && getActiveTurnIdStorage(sessionIdRef.current) === turnId) {
         removeActiveTurnIdStorage(sessionIdRef.current)
       }
-      isStreamingRef.current = false
-      setIsStreaming(false)
-      activeTurnIdRef.current = null
+      // Only clear shared streaming state if this session still owns it
+      if (sessionIdRef.current === queueSessionId) {
+        isStreamingRef.current = false
+        setIsStreaming(false)
+        activeTurnIdRef.current = null
+      }
       // Try next message after error (delay to ensure state updates settle)
       setTimeout(() => processNextQueuedMessage(), 500)
     })
@@ -605,10 +654,24 @@ export function BuildScreen({ user, onLogout, workingDirectory: initialWorkingDi
       // When switching projects, a previous session may still be streaming events —
       // only process events that match our current session (or have no sessionId for backwards compat).
       if (event.sessionId && sessionIdRef.current && event.sessionId !== sessionIdRef.current) {
-        // Background session completed — refresh the sessions list so sidebar updates
-        if ((event.event === 'done' || event.event === 'error') && workingDirectoryRef.current) {
-          console.log('[BuildScreen] Background session completed, refreshing sessions list:', event.sessionId)
-          loadSessions(workingDirectoryRef.current)
+        // Track background session streaming state for tab indicators
+        if (event.event === 'done' || event.event === 'error') {
+          setStreamingSessionIds(prev => {
+            const next = new Set(prev)
+            next.delete(event.sessionId!)
+            return next
+          })
+          if (workingDirectoryRef.current) {
+            console.log('[BuildScreen] Background session completed, refreshing sessions list:', event.sessionId)
+            loadSessions(workingDirectoryRef.current)
+          }
+        } else if (event.event === 'text' || event.event === 'partial_text' || event.event === 'tool_use') {
+          setStreamingSessionIds(prev => {
+            if (prev.has(event.sessionId!)) return prev
+            const next = new Set(prev)
+            next.add(event.sessionId!)
+            return next
+          })
         }
         return
       }
@@ -811,6 +874,15 @@ export function BuildScreen({ user, onLogout, workingDirectory: initialWorkingDi
           setSessionId(event.data.sessionId as string)
           if (event.data.sdkSessionId) {
             setSdkSessionId(event.data.sdkSessionId as string)
+
+            // Sync feature/project metadata to ConnText server so the session
+            // is linked to the correct feature before the full data sync arrives
+            if (activeFeatureIdRef.current || selectedProject?.id) {
+              window.api.updateSessionMetadata(event.data.sdkSessionId as string, {
+                projectId: selectedProject?.id ?? null,
+                featureId: activeFeatureIdRef.current ?? null,
+              }).catch(err => console.warn('[BuildScreen] Failed to sync session metadata:', err))
+            }
           }
           setTurns((prev) =>
             prev.map((t) => {
@@ -952,6 +1024,8 @@ export function BuildScreen({ user, onLogout, workingDirectory: initialWorkingDi
     setMemories([])
     setMemoryExists(false)
     setSessions([])
+    setOpenTabs([])
+    openTabsRef.current = []
     // Clear streaming state
     activeTurnIdRef.current = null
     isStreamingRef.current = false
@@ -1643,9 +1717,13 @@ This file stores important context and information for the AI agent.
             removeActiveTurnIdStorage(sessionIdRef.current)
           }
         }).finally(() => {
-          isStreamingRef.current = false
-          setIsStreaming(false)
-          activeTurnIdRef.current = null
+          // Only clear shared streaming state if this session still owns it
+          const skillSessionId = sessionId ?? sessionIdRef.current
+          if (sessionIdRef.current === skillSessionId) {
+            isStreamingRef.current = false
+            setIsStreaming(false)
+            activeTurnIdRef.current = null
+          }
         })
 
         return
@@ -1836,9 +1914,14 @@ You MUST focus your work within these folders. When reading, writing, editing, o
         removeActiveTurnIdStorage(sessionIdRef.current)
       }
     } finally {
-      isStreamingRef.current = false
-      setIsStreaming(false)
-      activeTurnIdRef.current = null
+      // Only clear shared streaming state if this session still owns it.
+      // If the user switched tabs while this was awaiting, another session
+      // now owns isStreamingRef/activeTurnIdRef — don't clobber them.
+      if (sessionIdRef.current === currentSessionId) {
+        isStreamingRef.current = false
+        setIsStreaming(false)
+        activeTurnIdRef.current = null
+      }
     }
   }, [input, workingDirectory, isStreaming, sessionId, sdkSessionId, memoryExists, pastedImages, attachedFiles, activeFolders, selectedModel])
 
@@ -1977,6 +2060,16 @@ You MUST focus your work within these folders. When reading, writing, editing, o
 
     // Clear pending questions from the previous session
     setPendingQuestions([])
+
+    // Add to open tabs if not already there (e.g. loading from session history)
+    setOpenTabs(prev => {
+      if (prev.some(t => t.sessionId === loadSessionId)) return prev
+      // Find title from sessions list
+      const sessionMeta = sessions.find(s => s.sessionId === loadSessionId)
+      const updated = [...prev, { sessionId: loadSessionId, title: sessionMeta?.title || 'Session' }]
+      openTabsRef.current = updated
+      return updated
+    })
 
     // First, try to get the live turn state from the main process.
     // This has the most up-to-date data if the session was running in the background.
@@ -2117,6 +2210,14 @@ You MUST focus your work within these folders. When reading, writing, editing, o
     setPendingQuestions([])
     if (oldSessionId) removeActiveTurnIdStorage(oldSessionId)
 
+    // Add to open tabs
+    const newTab = { sessionId: newSessionId, title: 'Untitled Session' }
+    setOpenTabs(prev => {
+      const updated = [...prev, newTab]
+      openTabsRef.current = updated
+      return updated
+    })
+
     // Create the session file on disk immediately with projectId
     if (workingDirectory) {
       const sessionData = {
@@ -2136,7 +2237,7 @@ You MUST focus your work within these folders. When reading, writing, editing, o
       }
       try {
         await window.api.saveSession(sessionData)
-        // Add to sessions list immediately so it shows in the dropdown
+        // Add to sessions list
         setSessions(prev => [{
           sessionId: newSessionId,
           projectId: projectId ?? null,
@@ -2157,6 +2258,25 @@ You MUST focus your work within these folders. When reading, writing, editing, o
     return newSessionId
   }
 
+  const handleCloseTab = async (closeSessionId: string) => {
+    const tabs = openTabsRef.current
+    if (tabs.length <= 1) return // Don't close the last tab
+
+    // Remove the tab
+    const updatedTabs = tabs.filter(t => t.sessionId !== closeSessionId)
+    setOpenTabs(updatedTabs)
+    openTabsRef.current = updatedTabs
+
+    // If closing the active tab, switch to the nearest neighbor
+    if (closeSessionId === sessionIdRef.current) {
+      const closedIndex = tabs.findIndex(t => t.sessionId === closeSessionId)
+      const nextTab = updatedTabs[Math.min(closedIndex, updatedTabs.length - 1)]
+      if (nextTab) {
+        await handleLoadSession(nextTab.sessionId)
+      }
+    }
+  }
+
   const handleRenameSession = async (targetSessionId: string, newTitle: string) => {
     if (!workingDirectory) return
     console.log('[BuildScreen] Renaming session', targetSessionId, 'to', newTitle, 'in', workingDirectory)
@@ -2168,6 +2288,14 @@ You MUST focus your work within these folders. When reading, writing, editing, o
         setSessions(prev => prev.map(s =>
           s.sessionId === targetSessionId ? { ...s, title: newTitle } : s
         ))
+        // Update open tab title
+        setOpenTabs(prev => {
+          const updated = prev.map(t =>
+            t.sessionId === targetSessionId ? { ...t, title: newTitle } : t
+          )
+          openTabsRef.current = updated
+          return updated
+        })
         // If renaming the current session, update the title
         if (targetSessionId === sessionId) {
           setCurrentSessionTitle(newTitle)
@@ -2178,6 +2306,93 @@ You MUST focus your work within these folders. When reading, writing, editing, o
     } catch (err) {
       console.error('[BuildScreen] Rename failed:', err)
     }
+  }
+
+  const handleSwapSession = async (loadSessionId: string) => {
+    if (!workingDirectory || !sessionIdRef.current) return
+
+    const currentId = sessionIdRef.current
+    const sessionMeta = sessions.find(s => s.sessionId === loadSessionId)
+    const newTitle = sessionMeta?.title || 'Session'
+
+    // Replace the current tab entry with the new session
+    setOpenTabs(prev => {
+      const updated = prev.map(t =>
+        t.sessionId === currentId ? { sessionId: loadSessionId, title: newTitle } : t
+      )
+      openTabsRef.current = updated
+      return updated
+    })
+
+    // Now load the session data (reuse existing load logic without re-adding to tabs)
+    setPendingQuestions([])
+
+    let liveState: Awaited<ReturnType<typeof window.api.getActiveTurnState>> = null
+    let agentSession: Awaited<ReturnType<typeof window.api.getSessionInfo>> = null
+    try {
+      liveState = await window.api.getActiveTurnState(loadSessionId)
+      agentSession = await window.api.getSessionInfo(loadSessionId)
+    } catch (err) {
+      console.warn('[BuildScreen] Failed to get live session state for swap:', err)
+    }
+
+    if (liveState?.meta && agentSession) {
+      const allTurns = [...liveState.meta.completedTurns]
+      if (liveState.activeTurn) allTurns.push(liveState.activeTurn)
+
+      setTurns(allTurns)
+      setSessionId(loadSessionId)
+      setSdkSessionId(agentSession.sdkSessionId ?? null)
+      setCurrentSessionTitle(liveState.meta.title)
+      const liveMeta = liveState.meta as Record<string, unknown>
+      if (liveMeta.featureId != null) {
+        setActiveFeatureId(liveMeta.featureId as string)
+        activeFeatureIdRef.current = liveMeta.featureId as string
+      }
+
+      if (agentSession.isProcessing && liveState.activeTurn) {
+        activeTurnIdRef.current = liveState.activeTurn.id
+        isStreamingRef.current = true
+        setIsStreaming(true)
+        setActiveTurnIdStorage(loadSessionId, liveState.activeTurn.id)
+      } else {
+        activeTurnIdRef.current = null
+        isStreamingRef.current = false
+        setIsStreaming(false)
+      }
+    } else {
+      // Fall back to loading from disk
+      try {
+        const data = await window.api.loadSession(workingDirectory, loadSessionId, projectId)
+        if (data) {
+          setTurns(data.turns || [])
+          setSessionId(data.sessionId)
+          setSdkSessionId(data.sdkSessionId ?? null)
+          setCurrentSessionTitle(data.title)
+          if (data.featureId) {
+            setActiveFeatureId(data.featureId)
+            activeFeatureIdRef.current = data.featureId
+          }
+          if (data.featureTitle) {
+            setActiveFeatureTitle(data.featureTitle)
+          }
+        }
+      } catch (err) {
+        console.error('[BuildScreen] Failed to load swapped session from disk:', err)
+      }
+      activeTurnIdRef.current = null
+      isStreamingRef.current = false
+      setIsStreaming(false)
+    }
+
+    // Update refs
+    sessionIdRef.current = loadSessionId
+    turnsRef.current = []
+    currentSessionTitleRef.current = newTitle
+    setVisibleTurnCount(6)
+    setInput('')
+    setPastedImages([])
+    console.log('[BuildScreen] Swapped current tab to session:', loadSessionId)
   }
 
   const handlePaste = async (e: React.ClipboardEvent<HTMLTextAreaElement>) => {
@@ -2728,12 +2943,6 @@ You MUST focus your work within these folders. When reading, writing, editing, o
         <Header
           workingDirectory={null}
           onSelectFolder={handleSelectFolder}
-          sessions={[]}
-          currentSessionId={null}
-          currentSessionTitle=""
-          onLoadSession={() => {}}
-          onNewSession={async () => ''}
-          onRenameSession={() => {}}
         />
         <div className="flex flex-1 items-center justify-center">
           <div className="text-center">
@@ -3245,6 +3454,19 @@ You MUST focus your work within these folders. When reading, writing, editing, o
   // Right pane content (chat)
   const rightPaneContent = (
     <div className="flex h-full flex-col bg-brand-bg">
+      {/* Session tabs bar */}
+      <SessionTabBar
+        openTabs={openTabs}
+        currentSessionId={sessionId}
+        onSwitchTab={handleLoadSession}
+        onNewSession={handleNewSession}
+        onCloseTab={handleCloseTab}
+        onRenameSession={handleRenameSession}
+        sessions={sessions}
+        onSwapSession={handleSwapSession}
+        streamingSessionIds={streamingSessionIds}
+      />
+
       {/* Session context bar — always-visible project ID + optional feature ID */}
       {projectId && (
         <div className="flex items-center gap-3 border-b border-brand-border/40 bg-brand-card/30 px-4 py-1.5">
@@ -3752,13 +3974,6 @@ You MUST focus your work within these folders. When reading, writing, editing, o
       <Header
         workingDirectory={workingDirectory}
         onSelectFolder={handleSelectFolder}
-        sessions={sessions}
-        currentSessionId={sessionId}
-        currentSessionTitle={currentSessionTitle}
-        onLoadSession={handleLoadSession}
-        onNewSession={handleNewSession}
-        onRenameSession={handleRenameSession}
-        projectId={projectId}
       />
 
       {/* Resizable three-pane layout: Employee Panel | Features | Chat */}
@@ -4018,40 +4233,58 @@ function formatDuration(seconds: number): string {
 
 const Header = memo(function Header({
   workingDirectory,
-  onSelectFolder,
-  sessions,
-  currentSessionId,
-  currentSessionTitle,
-  onLoadSession,
-  onNewSession,
-  onRenameSession,
-  projectId
+  onSelectFolder
 }: {
   workingDirectory: string | null
   onSelectFolder: () => void
-  sessions: SessionMetadata[]
-  currentSessionId: string | null
-  currentSessionTitle: string
-  onLoadSession: (sessionId: string) => void
-  onNewSession: () => Promise<string>
-  onRenameSession: (sessionId: string, newTitle: string) => void
-  projectId?: string
 }) {
-  const [showSessionDropdown, setShowSessionDropdown] = useState(false)
+  if (!workingDirectory) return null
+
+  return (
+    <div className="flex items-center border-b border-brand-border/50 px-3 py-1.5">
+      <div className="flex items-center gap-2">
+        <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round" className="text-brand-text-dim">
+          <path d="M22 19a2 2 0 0 1-2 2H4a2 2 0 0 1-2-2V5a2 2 0 0 1 2-2h5l2 3h9a2 2 0 0 1 2 2z" />
+        </svg>
+        <button
+          onClick={onSelectFolder}
+          className="cursor-pointer text-xs font-mono text-brand-text-muted transition-colors hover:text-brand-text"
+          title="Change folder"
+        >
+          {workingDirectory}
+        </button>
+      </div>
+    </div>
+  )
+})
+
+const SessionTabBar = memo(function SessionTabBar({
+  openTabs,
+  currentSessionId,
+  onSwitchTab,
+  onNewSession,
+  onCloseTab,
+  onRenameSession,
+  sessions,
+  onSwapSession,
+  streamingSessionIds
+}: {
+  openTabs: Array<{ sessionId: string; title: string }>
+  currentSessionId: string | null
+  onSwitchTab: (sessionId: string) => void
+  onNewSession: () => void
+  onCloseTab: (sessionId: string) => void
+  onRenameSession: (sessionId: string, newTitle: string) => void
+  sessions: SessionMetadata[]
+  onSwapSession: (sessionId: string) => void
+  streamingSessionIds?: Set<string>
+}) {
   const [editingSessionId, setEditingSessionId] = useState<string | null>(null)
   const [editingTitle, setEditingTitle] = useState('')
+  const [showSessionPicker, setShowSessionPicker] = useState(false)
+  const sessionPickerRef = useRef<HTMLDivElement>(null)
   const editInputRef = useRef<HTMLInputElement>(null)
-  const dropdownRef = useRef<HTMLDivElement>(null)
-
-  useEffect(() => {
-    const handleClickOutside = (e: MouseEvent) => {
-      if (dropdownRef.current && !dropdownRef.current.contains(e.target as Node)) {
-        setShowSessionDropdown(false)
-      }
-    }
-    if (showSessionDropdown) document.addEventListener('mousedown', handleClickOutside)
-    return () => document.removeEventListener('mousedown', handleClickOutside)
-  }, [showSessionDropdown])
+  const tabsContainerRef = useRef<HTMLDivElement>(null)
 
   useEffect(() => {
     if (editingSessionId && editInputRef.current) {
@@ -4060,10 +4293,31 @@ const Header = memo(function Header({
     }
   }, [editingSessionId])
 
-  const startRenaming = (sessionId: string, currentTitle: string, e: React.MouseEvent) => {
-    e.stopPropagation()
-    setEditingSessionId(sessionId)
-    setEditingTitle(currentTitle)
+  // Close session picker when clicking outside
+  useEffect(() => {
+    if (!showSessionPicker) return
+    const handleClickOutside = (e: MouseEvent) => {
+      if (sessionPickerRef.current && !sessionPickerRef.current.contains(e.target as Node)) {
+        setShowSessionPicker(false)
+      }
+    }
+    document.addEventListener('mousedown', handleClickOutside)
+    return () => document.removeEventListener('mousedown', handleClickOutside)
+  }, [showSessionPicker])
+
+  // Filter sessions to exclude currently open tabs
+  const openSessionIds = new Set(openTabs.map(t => t.sessionId))
+  const availableSessions = sessions.filter(s => !openSessionIds.has(s.sessionId) && s.turnsCount > 0)
+
+  const formatTimeAgo = (timestamp: number) => {
+    const diffMs = Date.now() - timestamp
+    const diffMins = Math.floor(diffMs / 60000)
+    const diffHours = Math.floor(diffMs / 3600000)
+    const diffDays = Math.floor(diffMs / 86400000)
+    if (diffMins < 60) return diffMins === 0 ? 'Just now' : `${diffMins}m ago`
+    if (diffHours < 24) return `${diffHours}h ago`
+    if (diffDays < 30) return `${diffDays}d ago`
+    return `${Math.floor(diffDays / 30)}mo ago`
   }
 
   const confirmRename = (sessionId: string) => {
@@ -4078,266 +4332,162 @@ const Header = memo(function Header({
     setEditingSessionId(null)
   }
 
-  const openSessionFile = (sessionId: string, e: React.MouseEvent) => {
-    e.stopPropagation()
-    if (!workingDirectory) return
-    const sessionsDir = projectId
-      ? `${workingDirectory}/.conntext/sessions/${projectId}`
-      : `${workingDirectory}/.conntext/sessions`
-    window.api.openPath(`${sessionsDir}/${sessionId}.json`)
-  }
-
-  if (!workingDirectory) return null
-
-  const formatDate = (timestamp: number) => {
-    const date = new Date(timestamp)
-    const now = new Date()
-    const isToday = date.toDateString() === now.toDateString()
-
-    if (isToday) {
-      return date.toLocaleTimeString('en-US', { hour: '2-digit', minute: '2-digit' })
-    }
-    return date.toLocaleDateString('en-US', { month: 'short', day: 'numeric' })
-  }
-
   return (
-    <div className="flex items-center justify-between border-b border-brand-border/50 px-4 py-1.5">
-      {/* Left: New Session button + Folder location */}
-      <div className="flex items-center gap-2">
-        <button
-          onClick={async () => { await onNewSession() }}
-          className="flex items-center justify-center rounded-md bg-brand-purple p-1 text-white transition-colors hover:bg-brand-purple-dim cursor-pointer"
-          title="New Session"
-        >
-          <Plus size={14} />
-        </button>
-        <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round" className="text-brand-text-dim">
-          <path d="M22 19a2 2 0 0 1-2 2H4a2 2 0 0 1-2-2V5a2 2 0 0 1 2-2h5l2 3h9a2 2 0 0 1 2 2z" />
-        </svg>
-        <button
-          onClick={onSelectFolder}
-          className="cursor-pointer text-xs font-mono text-brand-text-muted transition-colors hover:text-brand-text"
-          title="Change folder"
-        >
-          {workingDirectory}
-        </button>
-      </div>
-
-      {/* Right: Session selector */}
-      <div className="relative" ref={dropdownRef}>
-        <button
-          onClick={() => setShowSessionDropdown(!showSessionDropdown)}
-          className="flex items-center gap-2 rounded-lg px-2 py-1 text-xs transition-colors hover:bg-brand-border/30 cursor-pointer"
-          title="Switch session"
-        >
-          <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round" className="text-brand-text-dim">
-            <path d="M21 15a2 2 0 0 1-2 2H7l-4 4V5a2 2 0 0 1 2-2h14a2 2 0 0 1 2 2z"/>
-          </svg>
-          <span className="font-mono text-brand-text-muted max-w-[200px] truncate">
-            {currentSessionId ? (currentSessionTitle || 'Current Session') : 'New Session'}
-          </span>
-          <svg width="10" height="10" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round" className="text-brand-text-dim">
-            <polyline points="6 9 12 15 18 9"></polyline>
-          </svg>
-        </button>
-
-        {/* Dropdown */}
-        {showSessionDropdown && (
-          <div className="absolute right-0 top-full z-50 mt-1 w-80 rounded-lg border border-brand-border bg-brand-card shadow-xl">
-            <div className="max-h-96 overflow-y-auto">
-              {/* New Session Button */}
-              <div className="border-b border-brand-border/50 p-2">
-                <button
-                  onClick={async () => {
-                    const newId = await onNewSession()
-                    // Auto-enter rename mode so user can name the session immediately
-                    setEditingSessionId(newId)
-                    setEditingTitle('Untitled Session')
-                  }}
-                  className="w-full flex items-center justify-center gap-2 rounded-lg bg-brand-purple px-4 py-2.5 text-sm font-medium text-white transition-all hover:bg-brand-purple-dim cursor-pointer"
-                >
-                  <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
-                    <line x1="12" y1="5" x2="12" y2="19"></line>
-                    <line x1="5" y1="12" x2="19" y2="12"></line>
-                  </svg>
-                  New Session
-                </button>
-              </div>
-
-              {/* Current session */}
-              {currentSessionId ? (
-                <div className="border-b border-brand-border/50 p-2">
-                  <div className="group rounded-lg bg-brand-purple/10 px-3 py-2">
-                    <div className="flex items-center justify-between gap-2 mb-1">
-                      <div className="flex items-center gap-2">
-                        <span className="inline-block h-1.5 w-1.5 rounded-full bg-brand-purple animate-pulse" />
-                        <span className="text-xs font-medium text-brand-purple">Current Session</span>
-                      </div>
-                      {editingSessionId !== currentSessionId && (
-                        <button
-                          onClick={(e) => startRenaming(currentSessionId, currentSessionTitle || 'Untitled Session', e)}
-                          className="cursor-pointer rounded p-0.5 text-brand-purple/50 opacity-0 transition-opacity group-hover:opacity-100 hover:text-brand-purple hover:bg-brand-purple/10"
-                          title="Rename session"
-                        >
-                          <Pencil size={12} />
-                        </button>
-                      )}
-                    </div>
-                    {editingSessionId === currentSessionId ? (
-                      <div className="flex items-center gap-1.5">
-                        <input
-                          ref={editInputRef}
-                          type="text"
-                          value={editingTitle}
-                          onChange={(e) => setEditingTitle(e.target.value)}
-                          onKeyDown={(e) => {
-                            if (e.key === 'Enter') confirmRename(currentSessionId)
-                            if (e.key === 'Escape') cancelRename()
-                          }}
-                          className="flex-1 rounded border border-brand-purple/40 bg-brand-input px-2 py-1 text-sm text-brand-text outline-none focus:border-brand-purple"
-                        />
-                        <button
-                          onClick={() => confirmRename(currentSessionId)}
-                          className="cursor-pointer rounded p-1 text-green-400 hover:bg-green-400/10"
-                        >
-                          <Check size={14} />
-                        </button>
-                        <button
-                          onClick={cancelRename}
-                          className="cursor-pointer rounded p-1 text-brand-text-dim hover:bg-white/5"
-                        >
-                          <X size={14} />
-                        </button>
-                      </div>
-                    ) : (
-                      <>
-                        <p className="text-sm font-medium text-brand-text truncate">
-                          {currentSessionTitle || 'Untitled Session'}
-                        </p>
-                        <button
-                          onClick={(e) => openSessionFile(currentSessionId, e)}
-                          className="cursor-pointer text-xs font-mono text-brand-text-dim hover:text-brand-purple transition-colors mt-0.5 truncate block text-left"
-                          title="Open session JSON file"
-                        >
-                          {currentSessionId}
-                        </button>
-                      </>
-                    )}
-                  </div>
-                </div>
+    <div className="flex items-center border-b border-brand-border/50 px-0 py-0">
+      {/* Session tabs */}
+      <div className="flex items-center flex-1 min-w-0 overflow-x-auto scrollbar-hide" ref={tabsContainerRef}>
+        {openTabs.map((tab) => {
+          const isActive = tab.sessionId === currentSessionId
+          const isTabStreaming = streamingSessionIds?.has(tab.sessionId)
+          return (
+            <div
+              key={tab.sessionId}
+              className={`group flex items-center gap-1 shrink-0 px-3 py-1.5 cursor-pointer border-r border-brand-border/20 transition-colors ${
+                isActive
+                  ? 'bg-brand-purple/10 border-b-2 border-b-brand-purple'
+                  : 'hover:bg-brand-border/20 border-b-2 border-b-transparent'
+              }`}
+              onClick={() => onSwitchTab(tab.sessionId)}
+            >
+              {/* Session icon — pulsing dot when streaming in background */}
+              {isTabStreaming && !isActive ? (
+                <span className="relative flex h-2.5 w-2.5 shrink-0" title="Session is working...">
+                  <span className="animate-ping absolute inline-flex h-full w-full rounded-full bg-brand-purple opacity-75" />
+                  <span className="relative inline-flex rounded-full h-2.5 w-2.5 bg-brand-purple" />
+                </span>
+              ) : isTabStreaming && isActive ? (
+                <span className="relative flex h-2.5 w-2.5 shrink-0">
+                  <span className="relative inline-flex rounded-full h-2.5 w-2.5 bg-brand-purple" />
+                </span>
               ) : (
-                <div className="border-b border-brand-border/50 p-2">
-                  <div className="rounded-lg bg-brand-border/30 px-3 py-2">
-                    <div className="flex items-center gap-2 mb-1">
-                      <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round" className="text-brand-text-dim">
-                        <circle cx="12" cy="12" r="10"></circle>
-                        <line x1="12" y1="8" x2="12" y2="12"></line>
-                        <line x1="12" y1="16" x2="12.01" y2="16"></line>
-                      </svg>
-                      <span className="text-xs font-medium text-brand-text-muted">New Session</span>
-                    </div>
-                    <p className="text-xs text-brand-text-dim">
-                      Click &quot;New Session&quot; to start
-                    </p>
-                  </div>
-                </div>
+                <svg width="11" height="11" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round" className={isActive ? 'text-brand-purple' : 'text-brand-text-dim'}>
+                  <path d="M21 15a2 2 0 0 1-2 2H7l-4 4V5a2 2 0 0 1 2-2h14a2 2 0 0 1 2 2z"/>
+                </svg>
               )}
 
-              {/* Previous sessions */}
-              <div className="p-1">
-                <div className="px-3 py-1.5">
-                  <span className="text-xs font-medium text-brand-text-dim">Previous Sessions</span>
+              {/* Title (editable on double-click) */}
+              {editingSessionId === tab.sessionId ? (
+                <div className="flex items-center gap-1" onClick={(e) => e.stopPropagation()}>
+                  <input
+                    ref={editInputRef}
+                    type="text"
+                    value={editingTitle}
+                    onChange={(e) => setEditingTitle(e.target.value)}
+                    onKeyDown={(e) => {
+                      if (e.key === 'Enter') confirmRename(tab.sessionId)
+                      if (e.key === 'Escape') cancelRename()
+                    }}
+                    onBlur={() => confirmRename(tab.sessionId)}
+                    className="w-28 rounded border border-brand-purple/40 bg-brand-input px-1.5 py-0.5 text-xs text-brand-text outline-none focus:border-brand-purple"
+                  />
                 </div>
-                {sessions.length === 0 ? (
-                  <div className="px-3 py-4 text-center text-xs text-brand-text-dim">
-                    No previous sessions found
-                  </div>
-                ) : (
-                  sessions
-                    .filter(s => s.sessionId !== currentSessionId)
-                    .map((session) => (
-                      <div
-                        key={session.sessionId}
-                        className="group relative rounded-lg px-3 py-2 transition-colors hover:bg-brand-purple/10"
-                      >
-                        {editingSessionId === session.sessionId ? (
-                          <div className="flex items-center gap-1.5" onClick={(e) => e.stopPropagation()}>
-                            <input
-                              ref={editInputRef}
-                              type="text"
-                              value={editingTitle}
-                              onChange={(e) => setEditingTitle(e.target.value)}
-                              onKeyDown={(e) => {
-                                if (e.key === 'Enter') confirmRename(session.sessionId)
-                                if (e.key === 'Escape') cancelRename()
-                              }}
-                              className="flex-1 rounded border border-brand-purple/40 bg-brand-input px-2 py-1 text-sm text-brand-text outline-none focus:border-brand-purple"
-                            />
-                            <button
-                              onClick={() => confirmRename(session.sessionId)}
-                              className="cursor-pointer rounded p-1 text-green-400 hover:bg-green-400/10"
-                            >
-                              <Check size={14} />
-                            </button>
-                            <button
-                              onClick={cancelRename}
-                              className="cursor-pointer rounded p-1 text-brand-text-dim hover:bg-white/5"
-                            >
-                              <X size={14} />
-                            </button>
-                          </div>
-                        ) : (
-                          <div
-                            onClick={() => {
-                              onLoadSession(session.sessionId)
-                              setShowSessionDropdown(false)
-                            }}
-                            className="w-full text-left cursor-pointer"
-                            role="button"
-                            tabIndex={0}
-                            onKeyDown={(e) => {
-                              if (e.key === 'Enter' || e.key === ' ') {
-                                onLoadSession(session.sessionId)
-                                setShowSessionDropdown(false)
-                              }
-                            }}
-                          >
-                            <div className="flex items-start justify-between gap-2 mb-1">
-                              <p className="text-sm font-medium text-brand-text truncate flex-1">
-                                {session.title}
-                              </p>
-                              <div className="flex items-center gap-1.5 shrink-0">
-                                <button
-                                  onClick={(e) => { e.stopPropagation(); startRenaming(session.sessionId, session.title, e) }}
-                                  className="cursor-pointer rounded p-0.5 text-brand-text-dim opacity-0 transition-opacity group-hover:opacity-100 hover:text-brand-text hover:bg-white/5"
-                                  title="Rename session"
-                                >
-                                  <Pencil size={12} />
-                                </button>
-                                <span className="text-xs text-brand-text-dim whitespace-nowrap">
-                                  {formatDate(session.timestamp)}
-                                </span>
-                              </div>
-                            </div>
-                            <button
-                              onClick={(e) => openSessionFile(session.sessionId, e)}
-                              className="cursor-pointer text-[10px] font-mono text-brand-text-dim hover:text-brand-purple transition-colors truncate block text-left mt-0.5"
-                              title="Open session JSON file"
-                            >
-                              {session.sessionId}
-                            </button>
-                            <div className="flex items-center gap-3 text-xs text-brand-text-dim mt-1">
-                              <span>{session.turnsCount} turns</span>
-                              {session.totalCost > 0 && (
-                                <span>${session.totalCost.toFixed(4)}</span>
-                              )}
-                            </div>
-                          </div>
-                        )}
-                      </div>
-                    ))
-                )}
-              </div>
+              ) : (
+                <span
+                  className={`text-xs font-mono max-w-[140px] truncate select-none ${
+                    isActive ? 'text-brand-text' : 'text-brand-text-muted'
+                  }`}
+                  onDoubleClick={(e) => {
+                    e.stopPropagation()
+                    setEditingSessionId(tab.sessionId)
+                    setEditingTitle(tab.title || 'Untitled Session')
+                  }}
+                  title={tab.title || 'Untitled Session'}
+                >
+                  {tab.title || 'Untitled Session'}
+                </span>
+              )}
+
+              {/* Close button */}
+              {openTabs.length > 1 && (
+                <button
+                  onClick={(e) => {
+                    e.stopPropagation()
+                    onCloseTab(tab.sessionId)
+                  }}
+                  className={`cursor-pointer rounded p-0.5 transition-all ${
+                    isActive
+                      ? 'text-brand-purple/50 hover:text-brand-purple hover:bg-brand-purple/10'
+                      : 'text-brand-text-dim/0 group-hover:text-brand-text-dim hover:text-brand-text hover:bg-white/5'
+                  }`}
+                  title="Close session"
+                >
+                  <X size={12} />
+                </button>
+              )}
+            </div>
+          )
+        })}
+      </div>
+
+      {/* New tab button */}
+      <button
+        onClick={onNewSession}
+        className="flex items-center justify-center shrink-0 rounded p-1.5 text-brand-text-dim transition-colors hover:bg-brand-border/30 hover:text-brand-text cursor-pointer mx-1"
+        title="New Session"
+      >
+        <Plus size={14} />
+      </button>
+
+      {/* Session picker */}
+      <div className="relative shrink-0 pr-2" ref={sessionPickerRef}>
+        <button
+          onClick={() => setShowSessionPicker(!showSessionPicker)}
+          className={`flex items-center justify-center rounded p-1.5 transition-colors cursor-pointer ${
+            showSessionPicker
+              ? 'bg-brand-purple/15 text-brand-purple'
+              : 'text-brand-text-dim hover:bg-brand-border/30 hover:text-brand-text'
+          }`}
+          title="Load previous session"
+        >
+          <History size={13} />
+        </button>
+
+        {showSessionPicker && (
+          <div className="absolute top-full right-0 mt-1 z-50 w-72 rounded-lg border border-brand-border/60 bg-brand-card shadow-xl shadow-black/30 overflow-hidden">
+            <div className="px-3 py-2 border-b border-brand-border/40">
+              <span className="text-xs font-medium text-brand-text-muted">Load Previous Session</span>
+            </div>
+            <div className="max-h-64 overflow-y-auto">
+              {availableSessions.length === 0 ? (
+                <div className="px-3 py-4 text-center text-xs text-brand-text-dim">
+                  No previous sessions available
+                </div>
+              ) : (
+                availableSessions.map(session => (
+                  <button
+                    key={session.sessionId}
+                    onClick={() => {
+                      onSwapSession(session.sessionId)
+                      setShowSessionPicker(false)
+                    }}
+                    className="w-full px-3 py-2 text-left transition-colors hover:bg-brand-purple/10 cursor-pointer border-b border-brand-border/20 last:border-b-0"
+                  >
+                    <div className="flex items-center justify-between gap-2">
+                      <span className="text-xs font-mono text-brand-text truncate flex-1">
+                        {session.title || 'Untitled Session'}
+                      </span>
+                      <span className="text-[10px] text-brand-text-dim shrink-0">
+                        {formatTimeAgo(session.timestamp)}
+                      </span>
+                    </div>
+                    <div className="flex items-center gap-2 mt-0.5">
+                      <span className="text-[10px] text-brand-text-dim">
+                        {session.turnsCount} turn{session.turnsCount !== 1 ? 's' : ''}
+                      </span>
+                      {session.totalCost > 0 && (
+                        <span className="text-[10px] text-brand-text-dim">
+                          ${session.totalCost.toFixed(4)}
+                        </span>
+                      )}
+                      {session.featureTitle && (
+                        <span className="text-[10px] text-brand-purple-soft truncate">
+                          {session.featureTitle}
+                        </span>
+                      )}
+                    </div>
+                  </button>
+                ))
+              )}
             </div>
           </div>
         )}
