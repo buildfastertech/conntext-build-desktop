@@ -460,12 +460,24 @@ ipcMain.handle('skills:sync', async (_event, apiUrl: string, apiToken: string) =
   return skillsStore.syncSkills(apiUrl, apiToken)
 })
 
+ipcMain.handle('skills:check-and-sync', async (_event, apiUrl: string, apiToken: string) => {
+  return skillsStore.checkAndSync(apiUrl, apiToken)
+})
+
 ipcMain.handle('skills:get-info', async () => {
   return {
-    count: skillsStore.getSkillCount(),
-    lastSync: skillsStore.getLastSync(),
-    version: skillsStore.getVersion()
+    count: await skillsStore.getSkillCount(),
+    lastSync: await skillsStore.getLastSync(),
+    version: await skillsStore.getVersion()
   }
+})
+
+ipcMain.handle('skills:list', async () => {
+  return skillsStore.getSkillsList()
+})
+
+ipcMain.handle('skills:resolve', async (_event, commandName: string) => {
+  return skillsStore.resolveSkill(commandName)
 })
 
 ipcMain.handle('skills:clear', async () => {

@@ -105,8 +105,14 @@ const api = {
   // Skills
   syncSkills: (apiUrl: string, apiToken: string) =>
     ipcRenderer.invoke('skills:sync', apiUrl, apiToken),
+  checkAndSyncSkills: (apiUrl: string, apiToken: string) =>
+    ipcRenderer.invoke('skills:check-and-sync', apiUrl, apiToken),
   getSkillsInfo: () =>
     ipcRenderer.invoke('skills:get-info'),
+  listSkills: () =>
+    ipcRenderer.invoke('skills:list'),
+  resolveSkill: (commandName: string) =>
+    ipcRenderer.invoke('skills:resolve', commandName) as Promise<string | null>,
   clearSkills: () =>
     ipcRenderer.invoke('skills:clear'),
 

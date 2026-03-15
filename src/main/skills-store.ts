@@ -1,34 +1,40 @@
-import Store from 'electron-store'
 import { join } from 'path'
 import { app } from 'electron'
-import { mkdir, writeFile, readdir, rm, cp } from 'fs/promises'
-import { existsSync, createWriteStream } from 'fs'
-import AdmZip from 'adm-zip'
-import { pipeline } from 'stream/promises'
-import { Readable } from 'stream'
+import { mkdir, writeFile, readFile, rm, rename } from 'fs/promises'
+import { existsSync } from 'fs'
 
-interface SkillsData {
-  version: number
-  lastSync: string | null
-  skillCount: number
+export interface SkillMetadata {
+  id: string
+  title: string
+  version_number: number
+  purpose?: string | null
+  arguments?: Record<string, string> | null
+}
+
+export interface MetadataFile {
+  global_version: number
+  last_sync: string | null
+  skills: Record<string, SkillMetadata>
+}
+
+export interface SyncResult {
+  success: boolean
+  count: number
+  updated: boolean
+  error?: string
+  partialFailure?: boolean
 }
 
 export class SkillsStore {
-  private store: Store<SkillsData>
   private skillsPath: string
+  private metadataPath: string
+  private cachedMetadata: MetadataFile | null = null
+  private isSyncing: boolean = false
 
   constructor() {
-    this.store = new Store<SkillsData>({
-      name: 'skills',
-      defaults: {
-        version: 0,
-        lastSync: null,
-        skillCount: 0
-      }
-    })
-
     // Store skills in app data directory
     this.skillsPath = join(app.getPath('userData'), 'skills')
+    this.metadataPath = join(this.skillsPath, 'metadata.json')
     console.log(`[SkillsStore] Skills directory: ${this.skillsPath}`)
     this.ensureSkillsDirectory()
   }
@@ -74,7 +80,7 @@ export class SkillsStore {
     return fetch(url, options)
   }
 
-  private async ensureSkillsDirectory(): Promise<void> {
+  async ensureSkillsDirectory(): Promise<void> {
     if (!existsSync(this.skillsPath)) {
       await mkdir(this.skillsPath, { recursive: true })
     }
@@ -88,177 +94,437 @@ export class SkillsStore {
   }
 
   /**
-   * Get current version
+   * Validate that an unknown value conforms to the MetadataFile structure
    */
-  getVersion(): number {
-    return this.store.get('version', 0)
+  isMetadataValid(data: unknown): data is MetadataFile {
+    if (data === null || typeof data !== 'object') {
+      return false
+    }
+
+    const obj = data as Record<string, unknown>
+
+    if (typeof obj.global_version !== 'number' || !Number.isInteger(obj.global_version)) {
+      return false
+    }
+
+    if (obj.last_sync !== null && typeof obj.last_sync !== 'string') {
+      return false
+    }
+
+    if (obj.skills === null || typeof obj.skills !== 'object' || Array.isArray(obj.skills)) {
+      return false
+    }
+
+    const skills = obj.skills as Record<string, unknown>
+    for (const key of Object.keys(skills)) {
+      const skill = skills[key]
+      if (skill === null || typeof skill !== 'object') {
+        return false
+      }
+
+      const s = skill as Record<string, unknown>
+      if (typeof s.id !== 'string' || typeof s.title !== 'string' || typeof s.version_number !== 'number') {
+        return false
+      }
+
+      if (!Number.isInteger(s.version_number)) {
+        return false
+      }
+
+      // Ensure the key matches the skill id
+      if (s.id !== key) {
+        return false
+      }
+    }
+
+    return true
   }
 
   /**
-   * Get last sync timestamp
+   * Read and parse metadata.json from disk.
+   * Returns null if the file is missing, unreadable, or contains invalid data.
+   * Populates the in-memory cache on success.
    */
-  getLastSync(): string | null {
-    return this.store.get('lastSync', null)
+  async readMetadata(): Promise<MetadataFile | null> {
+    try {
+      const raw = await readFile(this.metadataPath, 'utf-8')
+      const parsed: unknown = JSON.parse(raw)
+
+      if (!this.isMetadataValid(parsed)) {
+        console.warn('[SkillsStore] metadata.json failed validation, treating as corrupt')
+        return null
+      }
+
+      this.cachedMetadata = parsed
+      return parsed
+    } catch (error) {
+      if ((error as NodeJS.ErrnoException).code === 'ENOENT') {
+        console.log('[SkillsStore] metadata.json not found')
+      } else {
+        console.warn('[SkillsStore] Failed to read metadata.json:', error)
+      }
+      return null
+    }
   }
 
   /**
-   * Get skill count
+   * Atomically write metadata.json to disk.
+   * Writes to a temporary file first, then renames to the final path to prevent corruption.
+   * Also updates the in-memory cache.
    */
-  getSkillCount(): number {
-    return this.store.get('skillCount', 0)
+  async writeMetadata(metadata: MetadataFile): Promise<void> {
+    await this.ensureSkillsDirectory()
+
+    const tempPath = join(this.skillsPath, `metadata.json.tmp.${Date.now()}`)
+
+    try {
+      const content = JSON.stringify(metadata, null, 2)
+      await writeFile(tempPath, content, 'utf-8')
+      await rename(tempPath, this.metadataPath)
+      this.cachedMetadata = metadata
+      console.log('[SkillsStore] metadata.json written successfully')
+    } catch (error) {
+      // Clean up temp file if rename failed
+      try {
+        if (existsSync(tempPath)) {
+          await rm(tempPath, { force: true })
+        }
+      } catch {
+        // Ignore cleanup errors
+      }
+      throw error
+    }
   }
 
   /**
-   * Sync skills from ConnText API
+   * Check whether metadata.json needs an initial sync.
+   * Returns true if metadata is missing or corrupt.
    */
-  async syncSkills(apiUrl: string, apiToken: string): Promise<{ success: boolean; count: number; error?: string; updated: boolean }> {
+  async needsInitialSync(): Promise<boolean> {
+    const metadata = await this.readMetadata()
+    return metadata === null
+  }
+
+  /**
+   * Get current global version from metadata.json
+   */
+  async getVersion(): Promise<number> {
+    if (this.cachedMetadata) {
+      return this.cachedMetadata.global_version
+    }
+    const metadata = await this.readMetadata()
+    return metadata?.global_version ?? 0
+  }
+
+  /**
+   * Get last sync timestamp from metadata.json
+   */
+  async getLastSync(): Promise<string | null> {
+    if (this.cachedMetadata) {
+      return this.cachedMetadata.last_sync
+    }
+    const metadata = await this.readMetadata()
+    return metadata?.last_sync ?? null
+  }
+
+  /**
+   * Get skill count from metadata.json
+   */
+  async getSkillCount(): Promise<number> {
+    if (this.cachedMetadata) {
+      return Object.keys(this.cachedMetadata.skills).length
+    }
+    const metadata = await this.readMetadata()
+    return metadata ? Object.keys(metadata.skills).length : 0
+  }
+
+  /**
+   * Handle API response errors with user-friendly messages
+   */
+  private handleApiResponse(response: Response, endpoint: string): void {
+    if (response.ok) {
+      return
+    }
+
+    switch (response.status) {
+      case 401:
+        throw new Error('Authentication failed - please log in again')
+      case 403:
+        throw new Error('Access denied')
+      case 429:
+        throw new Error('Rate limited - please try again later')
+      default:
+        throw new Error(`API request to ${endpoint} failed: ${response.status} ${response.statusText}`)
+    }
+  }
+
+  /**
+   * Check the remote global version number
+   */
+  async checkRemoteVersion(apiUrl: string, apiToken: string): Promise<{ global_version_number: number }> {
+    const endpoint = `${apiUrl}/api/skills/check-version`
+    const response = await this.secureFetch(endpoint, {
+      headers: {
+        'Authorization': `Bearer ${apiToken}`,
+        'Accept': 'application/json'
+      }
+    })
+
+    this.handleApiResponse(response, endpoint)
+    return await response.json()
+  }
+
+  /**
+   * Fetch the index of all available skills
+   */
+  async fetchSkillIndex(apiUrl: string, apiToken: string): Promise<Array<{ id: string; title: string; version_number: number; purpose?: string | null; arguments?: Record<string, string> | null }>> {
+    const endpoint = `${apiUrl}/api/skills`
+    const response = await this.secureFetch(endpoint, {
+      headers: {
+        'Authorization': `Bearer ${apiToken}`,
+        'Accept': 'application/json'
+      }
+    })
+
+    this.handleApiResponse(response, endpoint)
+    const data = await response.json()
+    return data.skills
+  }
+
+  /**
+   * Fetch the content of a single skill
+   */
+  async fetchSkillContent(apiUrl: string, apiToken: string, skillId: string): Promise<{ id: string; title: string; version_number: number; content: string; purpose?: string | null; arguments?: Record<string, string> | null }> {
+    const endpoint = `${apiUrl}/api/skills/${skillId}`
+    const response = await this.secureFetch(endpoint, {
+      headers: {
+        'Authorization': `Bearer ${apiToken}`,
+        'Accept': 'application/json'
+      }
+    })
+
+    this.handleApiResponse(response, endpoint)
+    return await response.json()
+  }
+
+  /**
+   * Sync skills from ConnText API using individual skill downloads.
+   * Compares remote index with local metadata to determine adds, updates, and deletions.
+   * Uses a locking mechanism to prevent concurrent sync operations.
+   */
+  async syncSkills(apiUrl: string, apiToken: string): Promise<SyncResult> {
+    // Acquire sync lock — if already syncing, return early (no-op)
+    if (this.isSyncing) {
+      const currentCount = await this.getSkillCount()
+      console.log('[SkillsStore] Sync already in progress, skipping')
+      return { success: true, count: currentCount, updated: false }
+    }
+
+    this.isSyncing = true
+
     try {
       console.log('[SkillsStore] Starting sync...')
+      await this.ensureSkillsDirectory()
 
-      // Fetch skills info from ConnText API
-      const infoResponse = await this.secureFetch(`${apiUrl}/api/skills`, {
-        headers: {
-          'Authorization': `Bearer ${apiToken}`,
-          'Accept': 'application/json'
+      // 1. Fetch the remote skill index
+      const remoteSkills = await this.fetchSkillIndex(apiUrl, apiToken)
+      console.log(`[SkillsStore] Remote index contains ${remoteSkills.length} skills`)
+
+      // 2. Read local metadata (create default if null)
+      let metadata = await this.readMetadata()
+      if (!metadata) {
+        metadata = {
+          global_version: 0,
+          last_sync: null,
+          skills: {}
         }
-      })
-
-      if (!infoResponse.ok) {
-        throw new Error(`API request failed: ${infoResponse.statusText}`)
+        console.log('[SkillsStore] No existing metadata, starting fresh')
       }
 
-      const skillsInfo = await infoResponse.json()
-      const remoteVersion = skillsInfo.version || 0
-      const downloadUrl = skillsInfo.download_url
-      const currentVersion = this.getVersion()
+      // 3. Build remote lookup and determine remote global version
+      const remoteById = new Map(remoteSkills.map(s => [s.id, s]))
+      const remoteGlobalVersion = remoteSkills.reduce(
+        (max, s) => Math.max(max, s.version_number),
+        0
+      )
 
-      console.log(`[SkillsStore] Version check - Remote: ${remoteVersion}, Current: ${currentVersion}, Download URL: ${downloadUrl}`)
+      // 4. Build three lists: toAdd, toUpdate, toDelete
+      const toAdd: Array<{ id: string; title: string; version_number: number }> = []
+      const toUpdate: Array<{ id: string; title: string; version_number: number; oldTitle: string }> = []
+      const toDelete: Array<{ id: string; title: string }> = []
 
-      // Check if we need to update
-      if (remoteVersion === 0 || !downloadUrl) {
-        console.log('[SkillsStore] No skills package available on server')
-        return {
-          success: true,
-          count: 0,
-          updated: false,
-          error: 'No skills package available on server'
-        }
-      }
-
-      if (remoteVersion <= currentVersion) {
-        // Already up to date
-        const currentCount = this.getSkillCount()
-        console.log(`[SkillsStore] Already up to date with ${currentCount} skills`)
-        return {
-          success: true,
-          count: currentCount,
-          updated: false
+      // Find skills to add or update
+      for (const remote of remoteSkills) {
+        const local = metadata.skills[remote.id]
+        if (!local) {
+          toAdd.push(remote)
+        } else if (remote.version_number > local.version_number || remote.title !== local.title) {
+          toUpdate.push({ ...remote, oldTitle: local.title })
         }
       }
 
-      console.log('[SkillsStore] New version available, downloading...')
-
-      // Download the zip file
-      const downloadResponse = await this.secureFetch(`${apiUrl}/api/skills/download`, {
-        headers: {
-          'Authorization': `Bearer ${apiToken}`
+      // Find skills to delete (local skills not in remote index)
+      for (const [localId, localSkill] of Object.entries(metadata.skills)) {
+        if (!remoteById.has(localId)) {
+          toDelete.push({ id: localId, title: localSkill.title })
         }
-      })
-
-      if (!downloadResponse.ok) {
-        throw new Error(`Download failed: ${downloadResponse.statusText}`)
       }
 
-      // Save zip to temp file
-      const tempZipPath = join(app.getPath('temp'), 'skills.zip')
-      const fileStream = createWriteStream(tempZipPath)
+      console.log(`[SkillsStore] Sync plan — Add: ${toAdd.length}, Update: ${toUpdate.length}, Delete: ${toDelete.length}`)
 
-      if (!downloadResponse.body) {
-        throw new Error('Response body is null')
-      }
-
-      await pipeline(Readable.fromWeb(downloadResponse.body as any), fileStream)
-
-      // Clear existing skills directory
-      if (existsSync(this.skillsPath)) {
-        await rm(this.skillsPath, { recursive: true, force: true })
-      }
-      await mkdir(this.skillsPath, { recursive: true })
-
-      // Extract zip file
-      console.log(`[SkillsStore] Extracting skills to: ${this.skillsPath}`)
-      const zip = new AdmZip(tempZipPath)
-      zip.extractAllTo(this.skillsPath, true)
-      console.log(`[SkillsStore] Extraction complete`)
-
-      // Check if ZIP has .claude/skills structure and flatten if needed
-      const claudeDirPath = join(this.skillsPath, '.claude')
-      const claudeSkillsPath = join(claudeDirPath, 'skills')
-
-      console.log(`[SkillsStore] Checking for .claude/skills at: ${claudeSkillsPath}`)
-      console.log(`[SkillsStore] .claude exists: ${existsSync(claudeDirPath)}`)
-      console.log(`[SkillsStore] .claude/skills exists: ${existsSync(claudeSkillsPath)}`)
-
-      if (existsSync(claudeDirPath)) {
-        const claudeContents = await readdir(claudeDirPath, { withFileTypes: true })
-        console.log(`[SkillsStore] Contents of .claude:`, claudeContents.map(e => `${e.name} (${e.isDirectory() ? 'dir' : 'file'})`))
-      }
-
-      if (existsSync(claudeSkillsPath)) {
-        console.log(`[SkillsStore] Found .claude/skills structure, flattening...`)
-
-        // Read contents of .claude/skills
-        const skillEntries = await readdir(claudeSkillsPath, { withFileTypes: true })
-
-        // Move each skill folder to root
-        for (const entry of skillEntries) {
-          if (entry.isDirectory()) {
-            const source = join(claudeSkillsPath, entry.name)
-            const dest = join(this.skillsPath, entry.name)
-            await cp(source, dest, { recursive: true })
-            console.log(`[SkillsStore] Moved ${entry.name} to root`)
+      // 5. Process deletions
+      for (const skill of toDelete) {
+        try {
+          const filePath = join(this.skillsPath, `${skill.title}.md`)
+          if (existsSync(filePath)) {
+            await rm(filePath, { force: true })
           }
-        }
-
-        // Remove .claude directory
-        await rm(join(this.skillsPath, '.claude'), { recursive: true, force: true })
-        console.log(`[SkillsStore] Cleaned up .claude directory`)
-      }
-
-      // Count extracted skills (folders with SKILL.md)
-      const entries = await readdir(this.skillsPath, { withFileTypes: true })
-      console.log(`[SkillsStore] Found ${entries.length} entries in skills directory:`, entries.map(e => `${e.name} (${e.isDirectory() ? 'dir' : 'file'})`))
-
-      const skillFolders = entries.filter(e => e.isDirectory())
-      let skillCount = 0
-
-      for (const folder of skillFolders) {
-        const skillMdPath = join(this.skillsPath, folder.name, 'SKILL.md')
-        console.log(`[SkillsStore] Checking for SKILL.md in: ${folder.name} -> ${existsSync(skillMdPath) ? 'FOUND' : 'NOT FOUND'}`)
-        if (existsSync(skillMdPath)) {
-          skillCount++
+          delete metadata.skills[skill.id]
+          console.log(`[SkillsStore] Deleted skill: ${skill.title}`)
+        } catch (error) {
+          console.error(`[SkillsStore] Failed to delete skill ${skill.title}:`, error)
         }
       }
 
-      console.log(`[SkillsStore] Total skills counted: ${skillCount}`)
+      // 6. Process additions and updates
+      let failureCount = 0
 
-      // Update store
-      this.store.set('version', remoteVersion)
-      this.store.set('skillCount', skillCount)
-      this.store.set('lastSync', new Date().toISOString())
+      for (const skill of toAdd) {
+        try {
+          const detail = await this.fetchSkillContent(apiUrl, apiToken, skill.id)
+          const filePath = join(this.skillsPath, `${detail.title}.md`)
+          await writeFile(filePath, detail.content, 'utf-8')
+          metadata.skills[skill.id] = {
+            id: skill.id,
+            title: detail.title,
+            version_number: detail.version_number,
+            purpose: detail.purpose ?? null,
+            arguments: detail.arguments ?? null
+          }
+          console.log(`[SkillsStore] Added skill: ${detail.title}`)
+        } catch (error) {
+          failureCount++
+          console.error(`[SkillsStore] Failed to download skill ${skill.id} (${skill.title}):`, error)
+        }
+      }
 
-      // Clean up temp file
-      await rm(tempZipPath, { force: true })
+      for (const skill of toUpdate) {
+        try {
+          const detail = await this.fetchSkillContent(apiUrl, apiToken, skill.id)
 
-      return { success: true, count: skillCount, updated: true }
+          // If title changed, delete the old file first
+          if (skill.oldTitle !== detail.title) {
+            const oldFilePath = join(this.skillsPath, `${skill.oldTitle}.md`)
+            if (existsSync(oldFilePath)) {
+              await rm(oldFilePath, { force: true })
+              console.log(`[SkillsStore] Renamed skill file: ${skill.oldTitle}.md -> ${detail.title}.md`)
+            }
+          }
+
+          const filePath = join(this.skillsPath, `${detail.title}.md`)
+          await writeFile(filePath, detail.content, 'utf-8')
+          metadata.skills[skill.id] = {
+            id: skill.id,
+            title: detail.title,
+            version_number: detail.version_number,
+            purpose: detail.purpose ?? null,
+            arguments: detail.arguments ?? null
+          }
+          console.log(`[SkillsStore] Updated skill: ${detail.title}`)
+        } catch (error) {
+          failureCount++
+          console.error(`[SkillsStore] Failed to update skill ${skill.id} (${skill.title}):`, error)
+        }
+      }
+
+      // 7. Update metadata and write to disk
+      const hasFailures = failureCount > 0
+      const hasChanges = toAdd.length > 0 || toUpdate.length > 0 || toDelete.length > 0
+
+      if (!hasFailures) {
+        // Only update global version if everything succeeded
+        metadata.global_version = remoteGlobalVersion
+      } else {
+        console.warn(`[SkillsStore] ${failureCount} skill(s) failed to download — global version NOT updated`)
+      }
+
+      metadata.last_sync = new Date().toISOString()
+      await this.writeMetadata(metadata)
+
+      const totalSkills = Object.keys(metadata.skills).length
+      console.log(`[SkillsStore] Sync complete — ${totalSkills} skills, ${hasFailures ? 'with failures' : 'all succeeded'}`)
+
+      return {
+        success: !hasFailures,
+        count: totalSkills,
+        updated: hasChanges,
+        partialFailure: hasFailures ? true : undefined,
+        error: hasFailures ? `${failureCount} skill(s) failed to download` : undefined
+      }
     } catch (error) {
-      console.error('Error syncing skills:', error)
+      console.error('[SkillsStore] Sync failed:', error)
       return {
         success: false,
         count: 0,
         updated: false,
         error: error instanceof Error ? error.message : 'Unknown error'
       }
+    } finally {
+      this.isSyncing = false
+    }
+  }
+
+  /**
+   * Check remote version and sync only if versions differ.
+   * Used for automatic startup checks.
+   */
+  async checkAndSync(apiUrl: string, apiToken: string): Promise<SyncResult> {
+    try {
+      const remoteVersionData = await this.checkRemoteVersion(apiUrl, apiToken)
+      const localVersion = await this.getVersion()
+
+      console.log(`[SkillsStore] Version check — Remote: ${remoteVersionData.global_version_number}, Local: ${localVersion}`)
+
+      if (remoteVersionData.global_version_number === localVersion && localVersion > 0) {
+        const currentCount = await this.getSkillCount()
+        console.log(`[SkillsStore] Already up to date (version ${localVersion}) with ${currentCount} skills`)
+        return { success: true, count: currentCount, updated: false }
+      }
+
+      console.log('[SkillsStore] Version mismatch, triggering sync...')
+      return await this.syncSkills(apiUrl, apiToken)
+    } catch (error) {
+      console.error('[SkillsStore] Check and sync failed:', error)
+      return {
+        success: false,
+        count: 0,
+        updated: false,
+        error: error instanceof Error ? error.message : 'Unknown error'
+      }
+    }
+  }
+
+  /**
+   * Get a list of all locally known skills with their id, title, version, purpose, and arguments
+   */
+  async getSkillsList(): Promise<Array<SkillMetadata>> {
+    const metadata = await this.readMetadata()
+    if (!metadata) return []
+    return Object.values(metadata.skills)
+  }
+
+  /**
+   * Resolve a skill by command name.
+   * Looks for a file named `{commandName}.md` in the skills directory.
+   * Returns the file content if found, or null if not found.
+   */
+  async resolveSkill(commandName: string): Promise<string | null> {
+    const filePath = join(this.skillsPath, `${commandName}.md`)
+    try {
+      const content = await readFile(filePath, 'utf-8')
+      return content
+    } catch {
+      return null
     }
   }
 
@@ -271,8 +537,11 @@ export class SkillsStore {
     }
     await mkdir(this.skillsPath, { recursive: true })
 
-    this.store.set('version', 0)
-    this.store.set('skillCount', 0)
-    this.store.set('lastSync', null)
+    // Write a fresh metadata.json
+    await this.writeMetadata({
+      global_version: 0,
+      last_sync: null,
+      skills: {}
+    })
   }
 }
