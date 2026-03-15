@@ -1,34 +1,32 @@
-import Store from 'electron-store'
 import { join } from 'path'
 import { app } from 'electron'
-import { mkdir, writeFile, readdir, rm, cp } from 'fs/promises'
+import { mkdir, writeFile, readFile, readdir, rm, cp, rename } from 'fs/promises'
 import { existsSync, createWriteStream } from 'fs'
 import AdmZip from 'adm-zip'
 import { pipeline } from 'stream/promises'
 import { Readable } from 'stream'
 
-interface SkillsData {
-  version: number
-  lastSync: string | null
-  skillCount: number
+export interface SkillMetadata {
+  id: string
+  title: string
+  version_number: number
+}
+
+export interface MetadataFile {
+  global_version: number
+  last_sync: string | null
+  skills: Record<string, SkillMetadata>
 }
 
 export class SkillsStore {
-  private store: Store<SkillsData>
   private skillsPath: string
+  private metadataPath: string
+  private cachedMetadata: MetadataFile | null = null
 
   constructor() {
-    this.store = new Store<SkillsData>({
-      name: 'skills',
-      defaults: {
-        version: 0,
-        lastSync: null,
-        skillCount: 0
-      }
-    })
-
     // Store skills in app data directory
     this.skillsPath = join(app.getPath('userData'), 'skills')
+    this.metadataPath = join(this.skillsPath, 'metadata.json')
     console.log(`[SkillsStore] Skills directory: ${this.skillsPath}`)
     this.ensureSkillsDirectory()
   }
@@ -74,7 +72,7 @@ export class SkillsStore {
     return fetch(url, options)
   }
 
-  private async ensureSkillsDirectory(): Promise<void> {
+  async ensureSkillsDirectory(): Promise<void> {
     if (!existsSync(this.skillsPath)) {
       await mkdir(this.skillsPath, { recursive: true })
     }
@@ -88,24 +86,148 @@ export class SkillsStore {
   }
 
   /**
-   * Get current version
+   * Validate that an unknown value conforms to the MetadataFile structure
    */
-  getVersion(): number {
-    return this.store.get('version', 0)
+  isMetadataValid(data: unknown): data is MetadataFile {
+    if (data === null || typeof data !== 'object') {
+      return false
+    }
+
+    const obj = data as Record<string, unknown>
+
+    if (typeof obj.global_version !== 'number' || !Number.isInteger(obj.global_version)) {
+      return false
+    }
+
+    if (obj.last_sync !== null && typeof obj.last_sync !== 'string') {
+      return false
+    }
+
+    if (obj.skills === null || typeof obj.skills !== 'object' || Array.isArray(obj.skills)) {
+      return false
+    }
+
+    const skills = obj.skills as Record<string, unknown>
+    for (const key of Object.keys(skills)) {
+      const skill = skills[key]
+      if (skill === null || typeof skill !== 'object') {
+        return false
+      }
+
+      const s = skill as Record<string, unknown>
+      if (typeof s.id !== 'string' || typeof s.title !== 'string' || typeof s.version_number !== 'number') {
+        return false
+      }
+
+      if (!Number.isInteger(s.version_number)) {
+        return false
+      }
+
+      // Ensure the key matches the skill id
+      if (s.id !== key) {
+        return false
+      }
+    }
+
+    return true
   }
 
   /**
-   * Get last sync timestamp
+   * Read and parse metadata.json from disk.
+   * Returns null if the file is missing, unreadable, or contains invalid data.
+   * Populates the in-memory cache on success.
    */
-  getLastSync(): string | null {
-    return this.store.get('lastSync', null)
+  async readMetadata(): Promise<MetadataFile | null> {
+    try {
+      const raw = await readFile(this.metadataPath, 'utf-8')
+      const parsed: unknown = JSON.parse(raw)
+
+      if (!this.isMetadataValid(parsed)) {
+        console.warn('[SkillsStore] metadata.json failed validation, treating as corrupt')
+        return null
+      }
+
+      this.cachedMetadata = parsed
+      return parsed
+    } catch (error) {
+      if ((error as NodeJS.ErrnoException).code === 'ENOENT') {
+        console.log('[SkillsStore] metadata.json not found')
+      } else {
+        console.warn('[SkillsStore] Failed to read metadata.json:', error)
+      }
+      return null
+    }
   }
 
   /**
-   * Get skill count
+   * Atomically write metadata.json to disk.
+   * Writes to a temporary file first, then renames to the final path to prevent corruption.
+   * Also updates the in-memory cache.
    */
-  getSkillCount(): number {
-    return this.store.get('skillCount', 0)
+  async writeMetadata(metadata: MetadataFile): Promise<void> {
+    await this.ensureSkillsDirectory()
+
+    const tempPath = join(this.skillsPath, `metadata.json.tmp.${Date.now()}`)
+
+    try {
+      const content = JSON.stringify(metadata, null, 2)
+      await writeFile(tempPath, content, 'utf-8')
+      await rename(tempPath, this.metadataPath)
+      this.cachedMetadata = metadata
+      console.log('[SkillsStore] metadata.json written successfully')
+    } catch (error) {
+      // Clean up temp file if rename failed
+      try {
+        if (existsSync(tempPath)) {
+          await rm(tempPath, { force: true })
+        }
+      } catch {
+        // Ignore cleanup errors
+      }
+      throw error
+    }
+  }
+
+  /**
+   * Check whether metadata.json needs an initial sync.
+   * Returns true if metadata is missing or corrupt.
+   */
+  async needsInitialSync(): Promise<boolean> {
+    const metadata = await this.readMetadata()
+    return metadata === null
+  }
+
+  /**
+   * Get current global version from metadata.json
+   */
+  async getVersion(): Promise<number> {
+    if (this.cachedMetadata) {
+      return this.cachedMetadata.global_version
+    }
+    const metadata = await this.readMetadata()
+    return metadata?.global_version ?? 0
+  }
+
+  /**
+   * Get last sync timestamp from metadata.json
+   */
+  async getLastSync(): Promise<string | null> {
+    if (this.cachedMetadata) {
+      return this.cachedMetadata.last_sync
+    }
+    const metadata = await this.readMetadata()
+    return metadata?.last_sync ?? null
+  }
+
+  /**
+   * Get skill count from metadata.json
+   */
+  async getSkillCount(): Promise<number> {
+    if (this.cachedMetadata) {
+      return Object.keys(this.cachedMetadata.skills).length
+    }
+    const metadata = await this.readMetadata()
+    return metadata ? Object.keys(metadata.skills).length : 0
   }
 
   /**
@@ -130,7 +252,7 @@ export class SkillsStore {
       const skillsInfo = await infoResponse.json()
       const remoteVersion = skillsInfo.version || 0
       const downloadUrl = skillsInfo.download_url
-      const currentVersion = this.getVersion()
+      const currentVersion = await this.getVersion()
 
       console.log(`[SkillsStore] Version check - Remote: ${remoteVersion}, Current: ${currentVersion}, Download URL: ${downloadUrl}`)
 
@@ -147,7 +269,7 @@ export class SkillsStore {
 
       if (remoteVersion <= currentVersion) {
         // Already up to date
-        const currentCount = this.getSkillCount()
+        const currentCount = await this.getSkillCount()
         console.log(`[SkillsStore] Already up to date with ${currentCount} skills`)
         return {
           success: true,
@@ -242,10 +364,13 @@ export class SkillsStore {
 
       console.log(`[SkillsStore] Total skills counted: ${skillCount}`)
 
-      // Update store
-      this.store.set('version', remoteVersion)
-      this.store.set('skillCount', skillCount)
-      this.store.set('lastSync', new Date().toISOString())
+      // Update metadata.json
+      const metadata: MetadataFile = {
+        global_version: remoteVersion,
+        last_sync: new Date().toISOString(),
+        skills: {}
+      }
+      await this.writeMetadata(metadata)
 
       // Clean up temp file
       await rm(tempZipPath, { force: true })
@@ -271,8 +396,11 @@ export class SkillsStore {
     }
     await mkdir(this.skillsPath, { recursive: true })
 
-    this.store.set('version', 0)
-    this.store.set('skillCount', 0)
-    this.store.set('lastSync', null)
+    // Write a fresh metadata.json
+    await this.writeMetadata({
+      global_version: 0,
+      last_sync: null,
+      skills: {}
+    })
   }
 }

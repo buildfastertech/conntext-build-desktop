@@ -462,9 +462,9 @@ ipcMain.handle('skills:sync', async (_event, apiUrl: string, apiToken: string) =
 
 ipcMain.handle('skills:get-info', async () => {
   return {
-    count: skillsStore.getSkillCount(),
-    lastSync: skillsStore.getLastSync(),
-    version: skillsStore.getVersion()
+    count: await skillsStore.getSkillCount(),
+    lastSync: await skillsStore.getLastSync(),
+    version: await skillsStore.getVersion()
   }
 })
 
