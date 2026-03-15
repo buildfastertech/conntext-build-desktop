@@ -111,6 +111,8 @@ const api = {
     ipcRenderer.invoke('skills:get-info'),
   listSkills: () =>
     ipcRenderer.invoke('skills:list'),
+  resolveSkill: (commandName: string) =>
+    ipcRenderer.invoke('skills:resolve', commandName) as Promise<string | null>,
   clearSkills: () =>
     ipcRenderer.invoke('skills:clear'),
 

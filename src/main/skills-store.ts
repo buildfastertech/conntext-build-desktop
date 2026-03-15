@@ -508,6 +508,21 @@ export class SkillsStore {
   }
 
   /**
+   * Resolve a skill by command name.
+   * Looks for a file named `{commandName}.md` in the skills directory.
+   * Returns the file content if found, or null if not found.
+   */
+  async resolveSkill(commandName: string): Promise<string | null> {
+    const filePath = join(this.skillsPath, `${commandName}.md`)
+    try {
+      const content = await readFile(filePath, 'utf-8')
+      return content
+    } catch {
+      return null
+    }
+  }
+
+  /**
    * Clear all skills
    */
   async clearSkills(): Promise<void> {

@@ -476,6 +476,10 @@ ipcMain.handle('skills:list', async () => {
   return skillsStore.getSkillsList()
 })
 
+ipcMain.handle('skills:resolve', async (_event, commandName: string) => {
+  return skillsStore.resolveSkill(commandName)
+})
+
 ipcMain.handle('skills:clear', async () => {
   await skillsStore.clearSkills()
   return { success: true }

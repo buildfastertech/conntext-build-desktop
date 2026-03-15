@@ -377,10 +377,16 @@ export function BuildScreen({ user, onLogout, workingDirectory: initialWorkingDi
   useEffect(() => {
     loadSkillsInfo()
 
-    // Auto-sync skills on mount if user is logged in
+    // Auto-sync skills on mount if user is logged in (version-check first, only syncs if needed)
     const autoSync = async () => {
       if (user) {
-        await handleSyncSkills()
+        const credentials = await window.api.getCredentials()
+        if (credentials) {
+          const result = await window.api.checkAndSyncSkills(credentials.apiUrl, credentials.apiToken)
+          if (result.success) {
+            await loadSkillsInfo()
+          }
+        }
       }
     }
     autoSync()
@@ -1604,25 +1610,12 @@ This file stores important context and information for the AI agent.
         return
       }
 
-      // Handle skills - commands that should be forwarded to the agent
-      // Pattern: /bf-*, /conntext-*, or known skill names
-      const skillPatterns = [
-        /^\/bf-/,           // BuildFaster skills
-        /^\/conntext-/,     // ConnText skills
-        /^\/loop$/,         // Known skills
-        /^\/simplify$/,
-        /^\/claude-api$/,
-        /^\/keybindings-help$/,
-        /^\/fix-issues$/,
-        /^\/feature-build$/,
-        /^\/project-build$/,
-        /^\/playwright-test$/,
-        /^\/playwright-fix-issues$/
-      ]
+      // Handle skills - dynamically resolve any unknown /command against local skills directory
+      const skillName = command.replace('/', '')
+      const skillContent = await window.api.resolveSkill(skillName)
 
-      if (skillPatterns.some(pattern => pattern.test(command))) {
-        // This is a skill command - forward to agent to run the skill
-        const skillName = command.replace('/', '')
+      if (skillContent) {
+        // Skill found locally - forward to agent to run the skill
         const skillPrompt = `Run the ${trimmedInput} skill`
 
         // Clear input
