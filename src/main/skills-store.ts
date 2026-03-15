@@ -7,6 +7,8 @@ export interface SkillMetadata {
   id: string
   title: string
   version_number: number
+  purpose?: string | null
+  arguments?: Record<string, string> | null
 }
 
 export interface MetadataFile {
@@ -275,7 +277,7 @@ export class SkillsStore {
   /**
    * Fetch the index of all available skills
    */
-  async fetchSkillIndex(apiUrl: string, apiToken: string): Promise<Array<{ id: string; title: string; version_number: number }>> {
+  async fetchSkillIndex(apiUrl: string, apiToken: string): Promise<Array<{ id: string; title: string; version_number: number; purpose?: string | null; arguments?: Record<string, string> | null }>> {
     const endpoint = `${apiUrl}/api/skills`
     const response = await this.secureFetch(endpoint, {
       headers: {
@@ -292,7 +294,7 @@ export class SkillsStore {
   /**
    * Fetch the content of a single skill
    */
-  async fetchSkillContent(apiUrl: string, apiToken: string, skillId: string): Promise<{ id: string; title: string; version_number: number; content: string }> {
+  async fetchSkillContent(apiUrl: string, apiToken: string, skillId: string): Promise<{ id: string; title: string; version_number: number; content: string; purpose?: string | null; arguments?: Record<string, string> | null }> {
     const endpoint = `${apiUrl}/api/skills/${skillId}`
     const response = await this.secureFetch(endpoint, {
       headers: {
@@ -395,7 +397,9 @@ export class SkillsStore {
           metadata.skills[skill.id] = {
             id: skill.id,
             title: detail.title,
-            version_number: detail.version_number
+            version_number: detail.version_number,
+            purpose: detail.purpose ?? null,
+            arguments: detail.arguments ?? null
           }
           console.log(`[SkillsStore] Added skill: ${detail.title}`)
         } catch (error) {
@@ -422,7 +426,9 @@ export class SkillsStore {
           metadata.skills[skill.id] = {
             id: skill.id,
             title: detail.title,
-            version_number: detail.version_number
+            version_number: detail.version_number,
+            purpose: detail.purpose ?? null,
+            arguments: detail.arguments ?? null
           }
           console.log(`[SkillsStore] Updated skill: ${detail.title}`)
         } catch (error) {
@@ -499,9 +505,9 @@ export class SkillsStore {
   }
 
   /**
-   * Get a list of all locally known skills with their id, title, and version
+   * Get a list of all locally known skills with their id, title, version, purpose, and arguments
    */
-  async getSkillsList(): Promise<Array<{ id: string; title: string; version_number: number }>> {
+  async getSkillsList(): Promise<Array<SkillMetadata>> {
     const metadata = await this.readMetadata()
     if (!metadata) return []
     return Object.values(metadata.skills)

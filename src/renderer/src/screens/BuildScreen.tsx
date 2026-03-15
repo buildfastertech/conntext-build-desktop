@@ -81,7 +81,7 @@ export function BuildScreen({ user, onLogout, workingDirectory: initialWorkingDi
   const [skillsLastSync, setSkillsLastSync] = useState<string | null>(null)
   const [isSyncingSkills, setIsSyncingSkills] = useState(false)
   const [syncSkillsMessage, setSyncSkillsMessage] = useState<{ type: 'success' | 'error' | 'info'; text: string } | null>(null)
-  const [skillsList, setSkillsList] = useState<Array<{ id: string; title: string; version_number: number }>>([])
+  const [skillsList, setSkillsList] = useState<Array<{ id: string; title: string; version_number: number; purpose?: string | null; arguments?: Record<string, string> | null }>>([])
   const [lastSyncPartialFailure, setLastSyncPartialFailure] = useState(false)
   const [selectedModel, setSelectedModel] = useState(() => localStorage.getItem('selectedModel') || 'claude-sonnet-4-5-20250929')
   const [isModelDropdownOpen, setIsModelDropdownOpen] = useState(false)
@@ -1490,142 +1490,25 @@ This file stores important context and information for the AI agent.
         return
       }
 
-      if (command === '/code-review') {
-        // Convert slash command to agent prompt and send it
-        const reviewPrompt = args
-          ? `Use the code_review tool to analyze ${args}. Check for security, performance, and best practices.`
-          : `Use the code_review tool to analyze the most recently modified files. Check for security, performance, and best practices.`
-
-        // Clear input and send the converted prompt
-        setInput('')
-
-        // Create the turn with the converted prompt
-        const turnId = crypto.randomUUID()
-        const newTurn: Turn = {
-          id: turnId,
-          userMessage: reviewPrompt,
-          images: pastedImages.length > 0 ? pastedImages : undefined,
-          textBlocks: [],
-          toolEvents: [],
-          isComplete: false,
-          startTime: Date.now(),
-          endTime: null,
-          costUsd: null
-        }
-
-        activeTurnIdRef.current = turnId
-        isStreamingRef.current = true
-
-        flushSync(() => {
-          setTurns((prev) => [...prev, newTurn])
-          setPastedImages([])
-          setIsStreaming(true)
-        })
-
-        localStorage.setItem('activeTurnId', turnId)
-
-        // Save session immediately
-        if (workingDirectory && sessionId) {
-          const sessionData = {
-            sessionId,
-            projectId: projectId ?? null,
-            featureId: activeFeatureIdRef.current ?? null,
-            title: currentSessionTitle || turns[0]?.userMessage?.slice(0, 50) || newTurn.userMessage.slice(0, 50) || 'Untitled Session',
-            timestamp: turns[0]?.startTime || Date.now(),
-            endTime: Date.now(),
-            workingDirectory,
-            turns: [...turns, newTurn],
-            totalCost: turns.reduce((sum, t) => sum + (t.costUsd || 0), 0),
-            contextTokens: contextTokensRef.current,
-            contextWindow: contextWindowRef.current
-          }
-          window.api.saveSession(sessionData).catch(err =>
-            console.error('[BuildScreen] Failed to save session immediately:', err)
-          )
-        }
-
-        // Send the message with conversation history
-        window.api.sendMessage({
-          content: newTurn.userMessage,
-          images: pastedImages.length > 0 ? pastedImages : undefined,
-          workingDirectory: workingDirectory!,
-          sessionId: sessionId ?? undefined,
-          sdkSessionId: sdkSessionId ?? undefined,
-          model: selectedModel,
-          turnId: newTurn.id,
-          sessionTitle: currentSessionTitle || newTurn.userMessage.slice(0, 50),
-          projectId: projectId ?? null,
-          featureId: activeFeatureIdRef.current ?? null,
-          previousTurns: turns.filter(t => t.isComplete)
-        }).then(result => {
-          // Safety net: commit any streaming text and mark complete.
-          // The 'done' stream event usually handles this, but the IPC Promise
-          // can resolve before the stream event arrives (race condition).
-          setTurns((prev) =>
-            prev.map((t) => {
-              if (t.id !== turnId) return t
-              if (t.isComplete) return t // Already handled by 'done' event
-              const blocks = [...t.textBlocks]
-              if (t.currentPartialText) {
-                const toolGroupCount = t.toolEvents.filter(e => e.type === 'tool_result').length
-                while (blocks.length <= toolGroupCount) blocks.push('')
-                if (!blocks[toolGroupCount]) {
-                  blocks[toolGroupCount] = t.currentPartialText
-                }
-              }
-              return {
-                ...t,
-                textBlocks: blocks,
-                isComplete: true,
-                endTime: t.endTime ?? Date.now(),
-                currentPartialText: undefined,
-                currentThinking: undefined,
-                isThinking: false,
-                toolProgress: undefined
-              }
-            })
-          )
-        }).catch(() => {
-          setTurns((prev) =>
-            prev.map((t) =>
-              t.id === turnId
-                ? {
-                    ...t,
-                    textBlocks: [...t.textBlocks, 'Failed to send message. Please try again.'],
-                    isComplete: true,
-                    endTime: Date.now()
-                  }
-                : t
-            )
-          )
-          if (localStorage.getItem('activeTurnId') === turnId) {
-            localStorage.removeItem('activeTurnId')
-          }
-        }).finally(() => {
-          isStreamingRef.current = false
-          setIsStreaming(false)
-          activeTurnIdRef.current = null
-        })
-
-        return
-      }
-
-      // Handle skills - dynamically resolve any unknown /command against local skills directory
+      // Handle skills - dynamically resolve any /command against local skills directory
       const skillName = command.replace('/', '')
       const skillContent = await window.api.resolveSkill(skillName)
 
       if (skillContent) {
-        // Skill found locally - forward to agent to run the skill
-        const skillPrompt = `Run the ${trimmedInput} skill`
+        // Skill found locally — inject the full skill content as the message to the agent
+        const skillPrompt = args
+          ? `${skillContent}\n\n---\nArguments: ${args}`
+          : skillContent
 
         // Clear input
         setInput('')
 
-        // Create the turn
+        // Create the turn — display the command in the UI, but send full skill content to agent
         const turnId = crypto.randomUUID()
+        const displayMessage = trimmedInput
         const newTurn: Turn = {
           id: turnId,
-          userMessage: skillPrompt,
+          userMessage: displayMessage,
           images: pastedImages.length > 0 ? pastedImages : undefined,
           textBlocks: [],
           toolEvents: [],
@@ -1678,16 +1561,16 @@ This file stores important context and information for the AI agent.
           )
         }
 
-        // Send the message with conversation history
+        // Send the full skill content to the agent (not the display message)
         window.api.sendMessage({
-          content: newTurn.userMessage,
+          content: skillPrompt,
           images: pastedImages.length > 0 ? pastedImages : undefined,
           workingDirectory: workingDirectory!,
           sessionId: sessionId ?? undefined,
           sdkSessionId: sdkSessionId ?? undefined,
           model: selectedModel,
           turnId: newTurn.id,
-          sessionTitle: currentSessionTitle || newTurn.userMessage.slice(0, 50),
+          sessionTitle: currentSessionTitle || displayMessage.slice(0, 50),
           projectId: projectId ?? null,
           featureId: activeFeatureIdRef.current ?? null,
           previousTurns: turns.filter(t => t.isComplete)
@@ -2382,15 +2265,35 @@ You MUST focus your work within these folders. When reading, writing, editing, o
     }
   }
 
-  // Available slash commands
-  const SLASH_COMMANDS = [
+  // Available slash commands — built-in + dynamically loaded skills
+  const BUILTIN_COMMANDS = [
     { command: '/init', description: 'Initialize project memory & copy skills', args: '' },
-    { command: '/code-review', description: 'Review code for issues', args: '[files]' },
-    { command: '/fix-issues', description: 'Fix bugs from code review', args: '' },
-    { command: '/feature-build', description: 'Build a feature from PRD', args: '[prd-path]' },
-    { command: '/project-build', description: 'Build entire project', args: '[prd-path]' },
-    { command: '/playwright-test', description: 'Generate/run Playwright tests', args: '[prd-path]' },
-    { command: '/playwright-fix-issues', description: 'Fix Playwright test bugs', args: '' }
+  ]
+
+  // Merge built-in commands with dynamically loaded skills from userData/skills/
+  // Each skill gets a base entry, plus one shortcut row per argument
+  const SLASH_COMMANDS = [
+    ...BUILTIN_COMMANDS,
+    ...skillsList
+      .filter(skill => !BUILTIN_COMMANDS.some(b => b.command === `/${skill.title}`))
+      .flatMap(skill => {
+        const base = {
+          command: `/${skill.title}`,
+          description: skill.purpose || `Run ${skill.title} skill`,
+          args: skill.arguments ? Object.keys(skill.arguments).map(k => `[${k}]`).join(' ') : ''
+        }
+
+        // Generate shortcut rows for each argument
+        const argShortcuts = skill.arguments
+          ? Object.entries(skill.arguments).map(([argName, argDesc]) => ({
+              command: `/${skill.title} ${argName}`,
+              description: argDesc || argName,
+              args: ''
+            }))
+          : []
+
+        return [base, ...argShortcuts]
+      })
   ]
 
   // Filter commands based on input

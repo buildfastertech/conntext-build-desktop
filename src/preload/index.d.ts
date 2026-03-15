@@ -380,7 +380,7 @@ export interface ElectronAPI {
   syncSkills: (apiUrl: string, apiToken: string) => Promise<SkillsSyncResult>
   checkAndSyncSkills: (apiUrl: string, apiToken: string) => Promise<SkillsSyncResult>
   getSkillsInfo: () => Promise<SkillsInfo>
-  listSkills: () => Promise<Array<{ id: string; title: string; version_number: number }>>
+  listSkills: () => Promise<Array<{ id: string; title: string; version_number: number; purpose?: string | null; arguments?: Record<string, string> | null }>>
   resolveSkill: (commandName: string) => Promise<string | null>
   clearSkills: () => Promise<{ success: boolean }>
 
