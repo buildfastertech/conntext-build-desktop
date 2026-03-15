@@ -231,6 +231,75 @@ export class SkillsStore {
   }
 
   /**
+   * Handle API response errors with user-friendly messages
+   */
+  private handleApiResponse(response: Response, endpoint: string): void {
+    if (response.ok) {
+      return
+    }
+
+    switch (response.status) {
+      case 401:
+        throw new Error('Authentication failed - please log in again')
+      case 403:
+        throw new Error('Access denied')
+      case 429:
+        throw new Error('Rate limited - please try again later')
+      default:
+        throw new Error(`API request to ${endpoint} failed: ${response.status} ${response.statusText}`)
+    }
+  }
+
+  /**
+   * Check the remote global version number
+   */
+  async checkRemoteVersion(apiUrl: string, apiToken: string): Promise<{ global_version_number: number }> {
+    const endpoint = `${apiUrl}/api/skills/check-version`
+    const response = await this.secureFetch(endpoint, {
+      headers: {
+        'Authorization': `Bearer ${apiToken}`,
+        'Accept': 'application/json'
+      }
+    })
+
+    this.handleApiResponse(response, endpoint)
+    return await response.json()
+  }
+
+  /**
+   * Fetch the index of all available skills
+   */
+  async fetchSkillIndex(apiUrl: string, apiToken: string): Promise<Array<{ id: string; title: string; version_number: number }>> {
+    const endpoint = `${apiUrl}/api/skills`
+    const response = await this.secureFetch(endpoint, {
+      headers: {
+        'Authorization': `Bearer ${apiToken}`,
+        'Accept': 'application/json'
+      }
+    })
+
+    this.handleApiResponse(response, endpoint)
+    const data = await response.json()
+    return data.skills
+  }
+
+  /**
+   * Fetch the content of a single skill
+   */
+  async fetchSkillContent(apiUrl: string, apiToken: string, skillId: string): Promise<{ id: string; title: string; version_number: number; content: string }> {
+    const endpoint = `${apiUrl}/api/skills/${skillId}`
+    const response = await this.secureFetch(endpoint, {
+      headers: {
+        'Authorization': `Bearer ${apiToken}`,
+        'Accept': 'application/json'
+      }
+    })
+
+    this.handleApiResponse(response, endpoint)
+    return await response.json()
+  }
+
+  /**
    * Sync skills from ConnText API
    */
   async syncSkills(apiUrl: string, apiToken: string): Promise<{ success: boolean; count: number; error?: string; updated: boolean }> {
