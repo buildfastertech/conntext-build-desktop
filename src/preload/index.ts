@@ -46,6 +46,7 @@ const api = {
   writeImageFile: (path: string, imageData: Uint8Array) => ipcRenderer.invoke('fs:write-image-file', path, imageData),
   listDirectories: (dirPath: string) => ipcRenderer.invoke('fs:list-directories', dirPath),
   searchFiles: (rootDir: string, query: string, limit?: number) => ipcRenderer.invoke('fs:search-files', rootDir, query, limit ?? 20),
+  openPath: (filePath: string) => ipcRenderer.invoke('fs:open-path', filePath),
 
   // Agent
   sendMessage: (params: {

@@ -415,9 +415,20 @@ export function SessionDialog({
                             )}
                           </div>
                         </div>
-                        <p className="font-mono text-[10px] text-brand-text-dim truncate" title={session.sessionId}>
+                        <button
+                          onClick={(e) => {
+                            e.stopPropagation()
+                            if (!workingDirectory) return
+                            const sessionsDir = session.projectId
+                              ? `${workingDirectory}/.conntext/sessions/${session.projectId}`
+                              : `${workingDirectory}/.conntext/sessions`
+                            window.api.openPath(`${sessionsDir}/${session.sessionId}.json`)
+                          }}
+                          className="cursor-pointer font-mono text-[10px] text-brand-text-dim hover:text-brand-purple transition-colors truncate block text-left"
+                          title="Open session JSON file"
+                        >
                           {session.sessionId}
-                        </p>
+                        </button>
                       </div>
                     ))}
                   </div>

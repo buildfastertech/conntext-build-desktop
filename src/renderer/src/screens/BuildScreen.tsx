@@ -524,6 +524,9 @@ export function BuildScreen({ user, onLogout, workingDirectory: initialWorkingDi
         sessionId: sessionIdRef.current,
         projectId: projectIdRef.current,
         featureId: activeFeatureIdRef.current ?? null,
+        userId: user?.id ?? null,
+        userName: user?.name ?? null,
+        userEmail: user?.email ?? null,
         title: currentSessionTitleRef.current || allTurns[0]?.userMessage?.slice(0, 50) || 'Untitled Session',
         timestamp: allTurns[0]?.startTime || Date.now(),
         endTime: Date.now(),
@@ -551,6 +554,9 @@ export function BuildScreen({ user, onLogout, workingDirectory: initialWorkingDi
       sessionTitle: currentSessionTitleRef.current || newTurn.userMessage.slice(0, 50),
       projectId: projectIdRef.current,
       featureId: activeFeatureIdRef.current ?? null,
+      userId: user?.id,
+      userName: user?.name,
+      userEmail: user?.email,
       previousTurns: turnsRef.current.filter(t => t.isComplete)
     }).catch(() => {
       setTurns((prev) =>
@@ -1547,6 +1553,9 @@ This file stores important context and information for the AI agent.
             sessionId,
             projectId: projectId ?? null,
             featureId: activeFeatureIdRef.current ?? null,
+            userId: user?.id ?? null,
+            userName: user?.name ?? null,
+            userEmail: user?.email ?? null,
             title: currentSessionTitle || turns[0]?.userMessage?.slice(0, 50) || newTurn.userMessage.slice(0, 50) || 'Untitled Session',
             timestamp: turns[0]?.startTime || Date.now(),
             endTime: Date.now(),
@@ -1573,6 +1582,9 @@ This file stores important context and information for the AI agent.
           sessionTitle: currentSessionTitle || displayMessage.slice(0, 50),
           projectId: projectId ?? null,
           featureId: activeFeatureIdRef.current ?? null,
+          userId: user?.id,
+          userName: user?.name,
+          userEmail: user?.email,
           previousTurns: turns.filter(t => t.isComplete)
         }).then(() => {
           // Skill turn completed successfully — inject skill_completed marker
@@ -1721,6 +1733,9 @@ You MUST focus your work within these folders. When reading, writing, editing, o
         projectId: projectId ?? null,
         featureId: activeFeatureIdRef.current ?? null,
         featureTitle: activeFeatureTitle ?? null,
+        userId: user?.id ?? null,
+        userName: user?.name ?? null,
+        userEmail: user?.email ?? null,
         title: currentSessionTitle || turns[0]?.userMessage?.slice(0, 50) || newTurn.userMessage.slice(0, 50) || 'Untitled Session',
         timestamp: turns[0]?.startTime || Date.now(),
         endTime: Date.now(),
@@ -1747,6 +1762,9 @@ You MUST focus your work within these folders. When reading, writing, editing, o
         sessionTitle: currentSessionTitle || turns[0]?.userMessage?.slice(0, 50) || newTurn.userMessage.slice(0, 50),
         projectId: projectId ?? null,
         featureId: activeFeatureIdRef.current ?? null,
+        userId: user?.id,
+        userName: user?.name,
+        userEmail: user?.email,
         previousTurns: turns.filter(t => t.isComplete)
       })
 
@@ -1912,6 +1930,9 @@ You MUST focus your work within these folders. When reading, writing, editing, o
       projectId: projectId ?? null,
       featureId: activeFeatureIdRef.current ?? null,
       featureTitle: activeFeatureTitle ?? null,
+      userId: user?.id ?? null,
+      userName: user?.name ?? null,
+      userEmail: user?.email ?? null,
       title: sessionTitle,
       timestamp: turns[0]?.startTime || Date.now(),
       endTime: Date.now(),
@@ -2028,16 +2049,20 @@ You MUST focus your work within these folders. When reading, writing, editing, o
     }
   }
 
-  const handleNewSession = () => {
+  const handleNewSession = async (): Promise<string> => {
     // Don't abort the old session — let it continue in the background
     if (sessionIdRef.current && isStreamingRef.current) {
       console.log('[BuildScreen] Detaching from active session (continues in background):', sessionIdRef.current)
     }
+
+    // Generate a new session ID immediately
+    const newSessionId = crypto.randomUUID()
+
     setTurns([])
     setVisibleTurnCount(6)
-    setSessionId(null)
+    setSessionId(newSessionId)
     setSdkSessionId(null)
-    setCurrentSessionTitle('')
+    setCurrentSessionTitle('Untitled Session')
     setPastedImages([])
     setInput('')
     setContextTokens(0)
@@ -2046,18 +2071,56 @@ You MUST focus your work within these folders. When reading, writing, editing, o
     setActiveFeatureId(null)
     setActiveFeatureTitle(null)
     activeFeatureIdRef.current = null
-    // Clear refs immediately so a quick follow-up message doesn't resume the old session
-    sessionIdRef.current = null
+    // Set refs immediately
+    sessionIdRef.current = newSessionId
     sdkSessionIdRef.current = null
     turnsRef.current = []
-    currentSessionTitleRef.current = ''
+    currentSessionTitleRef.current = 'Untitled Session'
     // Clear streaming state so it doesn't leak into the new session
     activeTurnIdRef.current = null
     isStreamingRef.current = false
     setIsStreaming(false)
     setPendingQuestions([])
     localStorage.removeItem('activeTurnId')
-    console.log('[BuildScreen] Started new session')
+
+    // Create the session file on disk immediately with projectId
+    if (workingDirectory) {
+      const sessionData = {
+        sessionId: newSessionId,
+        projectId: projectId ?? null,
+        featureId: null,
+        featureTitle: null,
+        userId: user?.id ?? null,
+        userName: user?.name ?? null,
+        userEmail: user?.email ?? null,
+        title: 'Untitled Session',
+        timestamp: Date.now(),
+        endTime: null,
+        workingDirectory,
+        turns: [],
+        totalCost: 0
+      }
+      try {
+        await window.api.saveSession(sessionData)
+        // Add to sessions list immediately so it shows in the dropdown
+        setSessions(prev => [{
+          sessionId: newSessionId,
+          projectId: projectId ?? null,
+          featureId: null,
+          featureTitle: null,
+          title: 'Untitled Session',
+          timestamp: Date.now(),
+          endTime: null,
+          turnsCount: 0,
+          totalCost: 0
+        }, ...prev])
+      } catch (err) {
+        console.error('[BuildScreen] Failed to create session file:', err)
+      }
+    }
+
+    console.log('[BuildScreen] Created new session:', newSessionId)
+    return newSessionId
   }
 
   const handleRenameSession = async (targetSessionId: string, newTitle: string) => {
@@ -2280,7 +2343,7 @@ You MUST focus your work within these folders. When reading, writing, editing, o
         const base = {
           command: `/${skill.title}`,
           description: skill.purpose || `Run ${skill.title} skill`,
-          args: skill.arguments ? Object.keys(skill.arguments).map(k => `[${k}]`).join(' ') : ''
+          args: ''
         }
 
         // Generate shortcut rows for each argument
@@ -2635,7 +2698,7 @@ You MUST focus your work within these folders. When reading, writing, editing, o
           currentSessionId={null}
           currentSessionTitle=""
           onLoadSession={() => {}}
-          onNewSession={() => {}}
+          onNewSession={async () => ''}
           onRenameSession={() => {}}
         />
         <div className="flex flex-1 items-center justify-center">
@@ -2982,7 +3045,7 @@ You MUST focus your work within these folders. When reading, writing, editing, o
                           )
 
                           // Run the build with downloaded PRD
-                          const prompt = `/conntext-feature-build ${result.path}`
+                          const prompt = `/feature-build ${result.path}`
                           handleSend(prompt, displayMsg)
                         }}
                         disabled={feature.prd_summary_status !== 'generated'}
@@ -3098,7 +3161,7 @@ You MUST focus your work within these folders. When reading, writing, editing, o
                                     )
 
                                     // Run the build with downloaded PRD
-                                    const prompt = `/conntext-feature-build ${result.path}`
+                                    const prompt = `/feature-build ${result.path}`
                                     handleSend(prompt, displayMsg)
                                   }}
                                   disabled={child.prd_summary_status !== 'generated'}
@@ -3258,22 +3321,24 @@ You MUST focus your work within these folders. When reading, writing, editing, o
                       <button
                         key={cmd.command}
                         onClick={() => executeCommand(cmd.command, true)}
-                        className={`flex w-full cursor-pointer items-center gap-2 rounded-md px-2 py-1.5 text-left transition-colors ${
+                        className={`flex w-full cursor-pointer items-start gap-2 rounded-md px-2 py-1.5 text-left transition-colors ${
                           index === selectedCommandIndex
                             ? 'bg-brand-purple/10 text-brand-text'
                             : 'hover:bg-brand-border/30 text-brand-text-muted'
                         }`}
                       >
-                        <code className={`rounded px-1.5 py-0.5 font-mono text-xs ${
-                          index === selectedCommandIndex
-                            ? 'bg-brand-purple/20 text-brand-purple'
-                            : 'bg-brand-bg text-brand-purple'
-                        }`}>
-                          {cmd.command} {cmd.args}
-                        </code>
-                        <span className="flex-1 text-xs">{cmd.description}</span>
+                        <div className="flex-1 min-w-0">
+                          <code className={`rounded px-1.5 py-0.5 font-mono text-sm font-semibold ${
+                            index === selectedCommandIndex
+                              ? 'bg-brand-purple/20 text-brand-purple'
+                              : 'bg-brand-bg text-brand-purple'
+                          }`}>
+                            {cmd.command}
+                          </code>
+                          <p className="mt-0.5 text-xs text-brand-text pl-1.5 leading-snug">{cmd.description}</p>
+                        </div>
                         {index === selectedCommandIndex && (
-                          <span className="text-[10px] text-brand-text-dim">↵</span>
+                          <span className="text-[10px] text-brand-text-dim mt-1">↵</span>
                         )}
                       </button>
                     ))}
@@ -3659,6 +3724,7 @@ You MUST focus your work within these folders. When reading, writing, editing, o
         onLoadSession={handleLoadSession}
         onNewSession={handleNewSession}
         onRenameSession={handleRenameSession}
+        projectId={projectId}
       />
 
       {/* Resizable three-pane layout: Employee Panel | Features | Chat */}
@@ -3924,7 +3990,8 @@ const Header = memo(function Header({
   currentSessionTitle,
   onLoadSession,
   onNewSession,
-  onRenameSession
+  onRenameSession,
+  projectId
 }: {
   workingDirectory: string | null
   onSelectFolder: () => void
@@ -3932,8 +3999,9 @@ const Header = memo(function Header({
   currentSessionId: string | null
   currentSessionTitle: string
   onLoadSession: (sessionId: string) => void
-  onNewSession: () => void
+  onNewSession: () => Promise<string>
   onRenameSession: (sessionId: string, newTitle: string) => void
+  projectId?: string
 }) {
   const [showSessionDropdown, setShowSessionDropdown] = useState(false)
   const [editingSessionId, setEditingSessionId] = useState<string | null>(null)
@@ -3974,6 +4042,15 @@ const Header = memo(function Header({
 
   const cancelRename = () => {
     setEditingSessionId(null)
+  }
+
+  const openSessionFile = (sessionId: string, e: React.MouseEvent) => {
+    e.stopPropagation()
+    if (!workingDirectory) return
+    const sessionsDir = projectId
+      ? `${workingDirectory}/.conntext/sessions/${projectId}`
+      : `${workingDirectory}/.conntext/sessions`
+    window.api.openPath(`${sessionsDir}/${sessionId}.json`)
   }
 
   if (!workingDirectory) return null
@@ -4030,9 +4107,11 @@ const Header = memo(function Header({
               {/* New Session Button */}
               <div className="border-b border-brand-border/50 p-2">
                 <button
-                  onClick={() => {
-                    onNewSession()
-                    setShowSessionDropdown(false)
+                  onClick={async () => {
+                    const newId = await onNewSession()
+                    // Auto-enter rename mode so user can name the session immediately
+                    setEditingSessionId(newId)
+                    setEditingTitle('Untitled Session')
                   }}
                   className="w-full flex items-center justify-center gap-2 rounded-lg bg-brand-purple px-4 py-2.5 text-sm font-medium text-white transition-all hover:bg-brand-purple-dim cursor-pointer"
                 >
@@ -4094,9 +4173,13 @@ const Header = memo(function Header({
                         <p className="text-sm font-medium text-brand-text truncate">
                           {currentSessionTitle || 'Untitled Session'}
                         </p>
-                        <p className="text-xs font-mono text-brand-text-dim truncate mt-0.5">
-                          {currentSessionId.slice(0, 8)}...
-                        </p>
+                        <button
+                          onClick={(e) => openSessionFile(currentSessionId, e)}
+                          className="cursor-pointer text-xs font-mono text-brand-text-dim hover:text-brand-purple transition-colors mt-0.5 truncate block text-left"
+                          title="Open session JSON file"
+                        >
+                          {currentSessionId}
+                        </button>
                       </>
                     )}
                   </div>
@@ -4113,7 +4196,7 @@ const Header = memo(function Header({
                       <span className="text-xs font-medium text-brand-text-muted">New Session</span>
                     </div>
                     <p className="text-xs text-brand-text-dim">
-                      Session will be created when you send your first message
+                      Click &quot;New Session&quot; to start
                     </p>
                   </div>
                 </div>
@@ -4195,7 +4278,14 @@ const Header = memo(function Header({
                                 </span>
                               </div>
                             </div>
-                            <div className="flex items-center gap-3 text-xs text-brand-text-dim">
+                            <button
+                              onClick={(e) => openSessionFile(session.sessionId, e)}
+                              className="cursor-pointer text-[10px] font-mono text-brand-text-dim hover:text-brand-purple transition-colors truncate block text-left mt-0.5"
+                              title="Open session JSON file"
+                            >
+                              {session.sessionId}
+                            </button>
+                            <div className="flex items-center gap-3 text-xs text-brand-text-dim mt-1">
                               <span>{session.turnsCount} turns</span>
                               {session.totalCost > 0 && (
                                 <span>${session.totalCost.toFixed(4)}</span>
