@@ -169,6 +169,22 @@ export function SessionHistoryDialog({
                       </button>
                     </div>
 
+                    {/* Session ID */}
+                    <button
+                      onClick={(e) => {
+                        e.stopPropagation()
+                        if (!workingDirectory) return
+                        const sessionsDir = session.projectId
+                          ? `${workingDirectory}/.conntext/sessions/${session.projectId}`
+                          : `${workingDirectory}/.conntext/sessions`
+                        window.api.openPath(`${sessionsDir}/${session.sessionId}.json`)
+                      }}
+                      className="cursor-pointer font-mono text-[10px] text-brand-text-dim hover:text-brand-purple transition-colors truncate block text-left mb-2"
+                      title="Open session JSON file"
+                    >
+                      {session.sessionId}
+                    </button>
+
                     {/* Stats */}
                     <div className="flex items-center gap-4 border-t border-brand-border/50 pt-3">
                       <div className="flex items-center gap-1.5 text-xs">

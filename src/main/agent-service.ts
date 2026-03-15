@@ -143,6 +143,9 @@ interface SessionMeta {
   projectId?: string | null
   featureId?: string | null
   markers: SessionMarker[]
+  userId?: string | null
+  userName?: string | null
+  userEmail?: string | null
 }
 
 interface Session {
@@ -191,6 +194,9 @@ export interface SessionSaveData {
   sdkSessionId?: string | null
   projectId: string | null
   featureId: string | null
+  userId?: string | null
+  userName?: string | null
+  userEmail?: string | null
   title: string
   timestamp: number
   endTime: number | null
@@ -403,6 +409,10 @@ export class AgentService {
       projectId?: string | null
       /** Feature ID for server sync */
       featureId?: string | null
+      /** User info for session metadata */
+      userId?: string | null
+      userName?: string | null
+      userEmail?: string | null
       previousTurns?: Array<{
         id: string
         userMessage: string
@@ -576,6 +586,9 @@ Please proceed to complete the user's request using the appropriate tools.`
         completedTurns: (params.previousTurns || []) as ActiveTurn[],
         projectId: params.projectId || null,
         featureId: params.featureId || null,
+        userId: params.userId || null,
+        userName: params.userName || null,
+        userEmail: params.userEmail || null,
         markers: []
       }
     } else {
@@ -620,6 +633,9 @@ Please proceed to complete the user's request using the appropriate tools.`
         allowDangerouslySkipPermissions: true,
         maxTurns: 50,
         includePartialMessages: true,
+        // Enable 1M context window for models that support it (Opus 4.6, etc.)
+        // Without this, the SDK defaults to 200k and compacts prematurely
+        betas: ['context-1m-2025-08-07'],
         // Enable file checkpointing so we can rewind file changes
         enableFileCheckpointing: true,
         // Required to receive checkpoint UUIDs in the stream
@@ -1143,6 +1159,12 @@ Please proceed to complete the user's request using the appropriate tools.`
       allTurns.push({ ...session.activeTurn })
     }
 
+    // Filter empty strings from textBlocks to avoid wasting space in the JSON
+    const cleanedTurns = allTurns.map(turn => ({
+      ...turn,
+      textBlocks: turn.textBlocks.filter(block => block !== '')
+    }))
+
     const projectId = session.meta.projectId || null
     const featureId = session.meta.featureId || null
 
@@ -1151,12 +1173,15 @@ Please proceed to complete the user's request using the appropriate tools.`
       sdkSessionId: session.sdkSessionId,
       projectId,
       featureId,
+      userId: session.meta.userId || null,
+      userName: session.meta.userName || null,
+      userEmail: session.meta.userEmail || null,
       title: session.meta.title,
       timestamp: session.meta.timestamp,
       endTime: Date.now(),
       workingDirectory: session.config.workingDirectory,
-      turns: allTurns,
-      totalCost: allTurns.reduce((sum, t) => sum + (t.costUsd || 0), 0),
+      turns: cleanedTurns,
+      totalCost: cleanedTurns.reduce((sum, t) => sum + (t.costUsd || 0), 0),
       markers: session.meta.markers.length > 0 ? session.meta.markers : undefined
     }
 

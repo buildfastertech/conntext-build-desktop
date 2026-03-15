@@ -1,4 +1,4 @@
-import { app, BrowserWindow, ipcMain, dialog, Menu } from 'electron'
+import { app, BrowserWindow, ipcMain, dialog, Menu, shell } from 'electron'
 import { join } from 'path'
 import * as path from 'path'
 import * as fs from 'fs'
@@ -455,6 +455,17 @@ ipcMain.handle('fs:search-files', async (_event, rootDir: string, query: string,
   return results
 })
 
+// Open file in default system application
+ipcMain.handle('fs:open-path', async (_event, filePath: string) => {
+  try {
+    await shell.openPath(filePath)
+    return { success: true }
+  } catch (error) {
+    console.error('Failed to open path:', error)
+    return { success: false }
+  }
+})
+
 // Skills
 ipcMain.handle('skills:sync', async (_event, apiUrl: string, apiToken: string) => {
   return skillsStore.syncSkills(apiUrl, apiToken)
@@ -743,8 +754,8 @@ ipcMain.handle('features:download-prd', async (_event, workspaceId: string, proj
       return { success: false, error: 'PRD not available for this feature' }
     }
 
-    // Create .context/feature directory if it doesn't exist
-    const contextDir = path.join(workingDirectory, '.context', 'feature')
+    // Create .conntext/feature directory if it doesn't exist
+    const contextDir = path.join(workingDirectory, '.conntext', 'feature')
     if (!fs.existsSync(contextDir)) {
       fs.mkdirSync(contextDir, { recursive: true })
     }
@@ -975,9 +986,20 @@ ipcMain.handle('session:save', async (_event, sessionData: {
       await mkdir(sessionsDir, { recursive: true })
     }
 
+    // Filter empty strings from textBlocks to avoid wasting space
+    const cleanedData = {
+      ...sessionData,
+      turns: (sessionData.turns as any[]).map((turn: any) => ({
+        ...turn,
+        textBlocks: Array.isArray(turn.textBlocks)
+          ? turn.textBlocks.filter((block: string) => block !== '')
+          : turn.textBlocks
+      }))
+    }
+
     // Save session file
     const sessionFile = join(sessionsDir, `${sessionData.sessionId}.json`)
-    await writeFile(sessionFile, JSON.stringify(sessionData, null, 2), 'utf-8')
+    await writeFile(sessionFile, JSON.stringify(cleanedData, null, 2), 'utf-8')
 
     // Sync to server (fire-and-forget) on every disk save when a project is selected
     if (sessionData.projectId) {

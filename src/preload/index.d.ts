@@ -330,6 +330,7 @@ export interface ElectronAPI {
   writeImageFile: (path: string, imageData: Uint8Array) => Promise<void>
   listDirectories: (dirPath: string) => Promise<string[]>
   searchFiles: (rootDir: string, query: string, limit?: number) => Promise<string[]>
+  openPath: (filePath: string) => Promise<{ success: boolean }>
 
   // Agent
   sendMessage: (params: {
@@ -345,6 +346,9 @@ export interface ElectronAPI {
     sessionTitle?: string
     projectId?: string | null
     featureId?: string | null
+    userId?: string | null
+    userName?: string | null
+    userEmail?: string | null
     previousTurns?: Turn[]
   }) => Promise<{ sessionId: string; success: boolean }>
 
