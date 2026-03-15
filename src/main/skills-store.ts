@@ -437,6 +437,16 @@ export class SkillsStore {
         }
       }
 
+      // 6b. Backfill purpose and arguments from index for skills that weren't added/updated
+      // This ensures existing skills get the new metadata fields even without a version bump
+      for (const remote of remoteSkills) {
+        const local = metadata.skills[remote.id]
+        if (local && !toAdd.some(s => s.id === remote.id) && !toUpdate.some(s => s.id === remote.id)) {
+          local.purpose = remote.purpose ?? null
+          local.arguments = remote.arguments ?? null
+        }
+      }
+
       // 7. Update metadata and write to disk
       const hasFailures = failureCount > 0
       const hasChanges = toAdd.length > 0 || toUpdate.length > 0 || toDelete.length > 0
