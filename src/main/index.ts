@@ -460,6 +460,10 @@ ipcMain.handle('skills:sync', async (_event, apiUrl: string, apiToken: string) =
   return skillsStore.syncSkills(apiUrl, apiToken)
 })
 
+ipcMain.handle('skills:check-and-sync', async (_event, apiUrl: string, apiToken: string) => {
+  return skillsStore.checkAndSync(apiUrl, apiToken)
+})
+
 ipcMain.handle('skills:get-info', async () => {
   return {
     count: await skillsStore.getSkillCount(),

@@ -143,6 +143,7 @@ export interface SkillsSyncResult {
   count: number
   updated: boolean
   error?: string
+  partialFailure?: boolean
 }
 
 export interface Workspace {
@@ -377,6 +378,7 @@ export interface ElectronAPI {
 
   // Skills
   syncSkills: (apiUrl: string, apiToken: string) => Promise<SkillsSyncResult>
+  checkAndSyncSkills: (apiUrl: string, apiToken: string) => Promise<SkillsSyncResult>
   getSkillsInfo: () => Promise<SkillsInfo>
   clearSkills: () => Promise<{ success: boolean }>
 

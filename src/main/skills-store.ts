@@ -1,10 +1,7 @@
 import { join } from 'path'
 import { app } from 'electron'
-import { mkdir, writeFile, readFile, readdir, rm, cp, rename } from 'fs/promises'
-import { existsSync, createWriteStream } from 'fs'
-import AdmZip from 'adm-zip'
-import { pipeline } from 'stream/promises'
-import { Readable } from 'stream'
+import { mkdir, writeFile, readFile, rm, rename } from 'fs/promises'
+import { existsSync } from 'fs'
 
 export interface SkillMetadata {
   id: string
@@ -18,10 +15,19 @@ export interface MetadataFile {
   skills: Record<string, SkillMetadata>
 }
 
+export interface SyncResult {
+  success: boolean
+  count: number
+  updated: boolean
+  error?: string
+  partialFailure?: boolean
+}
+
 export class SkillsStore {
   private skillsPath: string
   private metadataPath: string
   private cachedMetadata: MetadataFile | null = null
+  private isSyncing: boolean = false
 
   constructor() {
     // Store skills in app data directory
@@ -300,153 +306,189 @@ export class SkillsStore {
   }
 
   /**
-   * Sync skills from ConnText API
+   * Sync skills from ConnText API using individual skill downloads.
+   * Compares remote index with local metadata to determine adds, updates, and deletions.
+   * Uses a locking mechanism to prevent concurrent sync operations.
    */
-  async syncSkills(apiUrl: string, apiToken: string): Promise<{ success: boolean; count: number; error?: string; updated: boolean }> {
+  async syncSkills(apiUrl: string, apiToken: string): Promise<SyncResult> {
+    // Acquire sync lock — if already syncing, return early (no-op)
+    if (this.isSyncing) {
+      const currentCount = await this.getSkillCount()
+      console.log('[SkillsStore] Sync already in progress, skipping')
+      return { success: true, count: currentCount, updated: false }
+    }
+
+    this.isSyncing = true
+
     try {
       console.log('[SkillsStore] Starting sync...')
+      await this.ensureSkillsDirectory()
 
-      // Fetch skills info from ConnText API
-      const infoResponse = await this.secureFetch(`${apiUrl}/api/skills`, {
-        headers: {
-          'Authorization': `Bearer ${apiToken}`,
-          'Accept': 'application/json'
+      // 1. Fetch the remote skill index
+      const remoteSkills = await this.fetchSkillIndex(apiUrl, apiToken)
+      console.log(`[SkillsStore] Remote index contains ${remoteSkills.length} skills`)
+
+      // 2. Read local metadata (create default if null)
+      let metadata = await this.readMetadata()
+      if (!metadata) {
+        metadata = {
+          global_version: 0,
+          last_sync: null,
+          skills: {}
         }
-      })
-
-      if (!infoResponse.ok) {
-        throw new Error(`API request failed: ${infoResponse.statusText}`)
+        console.log('[SkillsStore] No existing metadata, starting fresh')
       }
 
-      const skillsInfo = await infoResponse.json()
-      const remoteVersion = skillsInfo.version || 0
-      const downloadUrl = skillsInfo.download_url
-      const currentVersion = await this.getVersion()
+      // 3. Build remote lookup and determine remote global version
+      const remoteById = new Map(remoteSkills.map(s => [s.id, s]))
+      const remoteGlobalVersion = remoteSkills.reduce(
+        (max, s) => Math.max(max, s.version_number),
+        0
+      )
 
-      console.log(`[SkillsStore] Version check - Remote: ${remoteVersion}, Current: ${currentVersion}, Download URL: ${downloadUrl}`)
+      // 4. Build three lists: toAdd, toUpdate, toDelete
+      const toAdd: Array<{ id: string; title: string; version_number: number }> = []
+      const toUpdate: Array<{ id: string; title: string; version_number: number; oldTitle: string }> = []
+      const toDelete: Array<{ id: string; title: string }> = []
 
-      // Check if we need to update
-      if (remoteVersion === 0 || !downloadUrl) {
-        console.log('[SkillsStore] No skills package available on server')
-        return {
-          success: true,
-          count: 0,
-          updated: false,
-          error: 'No skills package available on server'
-        }
-      }
-
-      if (remoteVersion <= currentVersion) {
-        // Already up to date
-        const currentCount = await this.getSkillCount()
-        console.log(`[SkillsStore] Already up to date with ${currentCount} skills`)
-        return {
-          success: true,
-          count: currentCount,
-          updated: false
+      // Find skills to add or update
+      for (const remote of remoteSkills) {
+        const local = metadata.skills[remote.id]
+        if (!local) {
+          toAdd.push(remote)
+        } else if (remote.version_number > local.version_number || remote.title !== local.title) {
+          toUpdate.push({ ...remote, oldTitle: local.title })
         }
       }
 
-      console.log('[SkillsStore] New version available, downloading...')
-
-      // Download the zip file
-      const downloadResponse = await this.secureFetch(`${apiUrl}/api/skills/download`, {
-        headers: {
-          'Authorization': `Bearer ${apiToken}`
+      // Find skills to delete (local skills not in remote index)
+      for (const [localId, localSkill] of Object.entries(metadata.skills)) {
+        if (!remoteById.has(localId)) {
+          toDelete.push({ id: localId, title: localSkill.title })
         }
-      })
-
-      if (!downloadResponse.ok) {
-        throw new Error(`Download failed: ${downloadResponse.statusText}`)
       }
 
-      // Save zip to temp file
-      const tempZipPath = join(app.getPath('temp'), 'skills.zip')
-      const fileStream = createWriteStream(tempZipPath)
+      console.log(`[SkillsStore] Sync plan — Add: ${toAdd.length}, Update: ${toUpdate.length}, Delete: ${toDelete.length}`)
 
-      if (!downloadResponse.body) {
-        throw new Error('Response body is null')
-      }
-
-      await pipeline(Readable.fromWeb(downloadResponse.body as any), fileStream)
-
-      // Clear existing skills directory
-      if (existsSync(this.skillsPath)) {
-        await rm(this.skillsPath, { recursive: true, force: true })
-      }
-      await mkdir(this.skillsPath, { recursive: true })
-
-      // Extract zip file
-      console.log(`[SkillsStore] Extracting skills to: ${this.skillsPath}`)
-      const zip = new AdmZip(tempZipPath)
-      zip.extractAllTo(this.skillsPath, true)
-      console.log(`[SkillsStore] Extraction complete`)
-
-      // Check if ZIP has .claude/skills structure and flatten if needed
-      const claudeDirPath = join(this.skillsPath, '.claude')
-      const claudeSkillsPath = join(claudeDirPath, 'skills')
-
-      console.log(`[SkillsStore] Checking for .claude/skills at: ${claudeSkillsPath}`)
-      console.log(`[SkillsStore] .claude exists: ${existsSync(claudeDirPath)}`)
-      console.log(`[SkillsStore] .claude/skills exists: ${existsSync(claudeSkillsPath)}`)
-
-      if (existsSync(claudeDirPath)) {
-        const claudeContents = await readdir(claudeDirPath, { withFileTypes: true })
-        console.log(`[SkillsStore] Contents of .claude:`, claudeContents.map(e => `${e.name} (${e.isDirectory() ? 'dir' : 'file'})`))
-      }
-
-      if (existsSync(claudeSkillsPath)) {
-        console.log(`[SkillsStore] Found .claude/skills structure, flattening...`)
-
-        // Read contents of .claude/skills
-        const skillEntries = await readdir(claudeSkillsPath, { withFileTypes: true })
-
-        // Move each skill folder to root
-        for (const entry of skillEntries) {
-          if (entry.isDirectory()) {
-            const source = join(claudeSkillsPath, entry.name)
-            const dest = join(this.skillsPath, entry.name)
-            await cp(source, dest, { recursive: true })
-            console.log(`[SkillsStore] Moved ${entry.name} to root`)
+      // 5. Process deletions
+      for (const skill of toDelete) {
+        try {
+          const filePath = join(this.skillsPath, `${skill.title}.md`)
+          if (existsSync(filePath)) {
+            await rm(filePath, { force: true })
           }
-        }
-
-        // Remove .claude directory
-        await rm(join(this.skillsPath, '.claude'), { recursive: true, force: true })
-        console.log(`[SkillsStore] Cleaned up .claude directory`)
-      }
-
-      // Count extracted skills (folders with SKILL.md)
-      const entries = await readdir(this.skillsPath, { withFileTypes: true })
-      console.log(`[SkillsStore] Found ${entries.length} entries in skills directory:`, entries.map(e => `${e.name} (${e.isDirectory() ? 'dir' : 'file'})`))
-
-      const skillFolders = entries.filter(e => e.isDirectory())
-      let skillCount = 0
-
-      for (const folder of skillFolders) {
-        const skillMdPath = join(this.skillsPath, folder.name, 'SKILL.md')
-        console.log(`[SkillsStore] Checking for SKILL.md in: ${folder.name} -> ${existsSync(skillMdPath) ? 'FOUND' : 'NOT FOUND'}`)
-        if (existsSync(skillMdPath)) {
-          skillCount++
+          delete metadata.skills[skill.id]
+          console.log(`[SkillsStore] Deleted skill: ${skill.title}`)
+        } catch (error) {
+          console.error(`[SkillsStore] Failed to delete skill ${skill.title}:`, error)
         }
       }
 
-      console.log(`[SkillsStore] Total skills counted: ${skillCount}`)
+      // 6. Process additions and updates
+      let failureCount = 0
 
-      // Update metadata.json
-      const metadata: MetadataFile = {
-        global_version: remoteVersion,
-        last_sync: new Date().toISOString(),
-        skills: {}
+      for (const skill of toAdd) {
+        try {
+          const detail = await this.fetchSkillContent(apiUrl, apiToken, skill.id)
+          const filePath = join(this.skillsPath, `${detail.title}.md`)
+          await writeFile(filePath, detail.content, 'utf-8')
+          metadata.skills[skill.id] = {
+            id: skill.id,
+            title: detail.title,
+            version_number: detail.version_number
+          }
+          console.log(`[SkillsStore] Added skill: ${detail.title}`)
+        } catch (error) {
+          failureCount++
+          console.error(`[SkillsStore] Failed to download skill ${skill.id} (${skill.title}):`, error)
+        }
       }
+
+      for (const skill of toUpdate) {
+        try {
+          const detail = await this.fetchSkillContent(apiUrl, apiToken, skill.id)
+
+          // If title changed, delete the old file first
+          if (skill.oldTitle !== detail.title) {
+            const oldFilePath = join(this.skillsPath, `${skill.oldTitle}.md`)
+            if (existsSync(oldFilePath)) {
+              await rm(oldFilePath, { force: true })
+              console.log(`[SkillsStore] Renamed skill file: ${skill.oldTitle}.md -> ${detail.title}.md`)
+            }
+          }
+
+          const filePath = join(this.skillsPath, `${detail.title}.md`)
+          await writeFile(filePath, detail.content, 'utf-8')
+          metadata.skills[skill.id] = {
+            id: skill.id,
+            title: detail.title,
+            version_number: detail.version_number
+          }
+          console.log(`[SkillsStore] Updated skill: ${detail.title}`)
+        } catch (error) {
+          failureCount++
+          console.error(`[SkillsStore] Failed to update skill ${skill.id} (${skill.title}):`, error)
+        }
+      }
+
+      // 7. Update metadata and write to disk
+      const hasFailures = failureCount > 0
+      const hasChanges = toAdd.length > 0 || toUpdate.length > 0 || toDelete.length > 0
+
+      if (!hasFailures) {
+        // Only update global version if everything succeeded
+        metadata.global_version = remoteGlobalVersion
+      } else {
+        console.warn(`[SkillsStore] ${failureCount} skill(s) failed to download — global version NOT updated`)
+      }
+
+      metadata.last_sync = new Date().toISOString()
       await this.writeMetadata(metadata)
 
-      // Clean up temp file
-      await rm(tempZipPath, { force: true })
+      const totalSkills = Object.keys(metadata.skills).length
+      console.log(`[SkillsStore] Sync complete — ${totalSkills} skills, ${hasFailures ? 'with failures' : 'all succeeded'}`)
 
-      return { success: true, count: skillCount, updated: true }
+      return {
+        success: !hasFailures,
+        count: totalSkills,
+        updated: hasChanges,
+        partialFailure: hasFailures ? true : undefined,
+        error: hasFailures ? `${failureCount} skill(s) failed to download` : undefined
+      }
     } catch (error) {
-      console.error('Error syncing skills:', error)
+      console.error('[SkillsStore] Sync failed:', error)
+      return {
+        success: false,
+        count: 0,
+        updated: false,
+        error: error instanceof Error ? error.message : 'Unknown error'
+      }
+    } finally {
+      this.isSyncing = false
+    }
+  }
+
+  /**
+   * Check remote version and sync only if versions differ.
+   * Used for automatic startup checks.
+   */
+  async checkAndSync(apiUrl: string, apiToken: string): Promise<SyncResult> {
+    try {
+      const remoteVersionData = await this.checkRemoteVersion(apiUrl, apiToken)
+      const localVersion = await this.getVersion()
+
+      console.log(`[SkillsStore] Version check — Remote: ${remoteVersionData.global_version_number}, Local: ${localVersion}`)
+
+      if (remoteVersionData.global_version_number === localVersion && localVersion > 0) {
+        const currentCount = await this.getSkillCount()
+        console.log(`[SkillsStore] Already up to date (version ${localVersion}) with ${currentCount} skills`)
+        return { success: true, count: currentCount, updated: false }
+      }
+
+      console.log('[SkillsStore] Version mismatch, triggering sync...')
+      return await this.syncSkills(apiUrl, apiToken)
+    } catch (error) {
+      console.error('[SkillsStore] Check and sync failed:', error)
       return {
         success: false,
         count: 0,
