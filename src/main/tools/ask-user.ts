@@ -66,7 +66,10 @@ export function hasPendingQuestion(questionId: string): boolean {
 
 // ─── Notification callback ──────────────────────────────────────────────────
 // The MCP tool needs to notify the renderer that a question is pending.
-// This callback is set by the agent service when it starts processing.
+// Multiple sessions may be processing concurrently, so we maintain a set of
+// notifiers. Each session registers its own notifier when it starts processing
+// and removes it when done. Questions are broadcast to all active notifiers;
+// the renderer filters by sessionId to display only the relevant question.
 
 type QuestionNotifier = (questionData: {
   questionId: string;
@@ -78,10 +81,32 @@ type QuestionNotifier = (questionData: {
   }>;
 }) => void;
 
-let activeNotifier: QuestionNotifier | null = null;
+const activeNotifiers = new Set<QuestionNotifier>();
 
+/**
+ * Register or unregister a question notifier.
+ * Pass a function to register, or pass null with the same reference to unregister.
+ * For backwards compatibility, passing null removes all notifiers if only one exists.
+ */
+export function addQuestionNotifier(notifier: QuestionNotifier): void {
+  activeNotifiers.add(notifier);
+}
+
+export function removeQuestionNotifier(notifier: QuestionNotifier): void {
+  activeNotifiers.delete(notifier);
+}
+
+// Keep setQuestionNotifier for backwards compatibility but it now delegates
+// to the set-based approach. Passing null removes ALL notifiers (safe because
+// the agent-service always pairs set(fn) with set(null) on its own notifier).
+/** @deprecated Use addQuestionNotifier / removeQuestionNotifier instead */
 export function setQuestionNotifier(notifier: QuestionNotifier | null): void {
-  activeNotifier = notifier;
+  if (notifier) {
+    activeNotifiers.add(notifier);
+  } else {
+    // Legacy behaviour: clear all. Only safe when there's a single session.
+    activeNotifiers.clear();
+  }
 }
 
 // ─── Tool Definition ────────────────────────────────────────────────────────
@@ -109,12 +134,16 @@ The return value is a JSON object with the user's selections. Parse it and use t
     console.log(`[ask_user] Tool invoked | questionId: ${questionId} | questions: ${questions.length}`);
     console.log(`[ask_user] Pending questions BEFORE adding: ${pendingQuestions.size}`);
 
-    // Notify the renderer to show the question UI
-    if (activeNotifier) {
-      activeNotifier({
-        questionId,
-        questions,
-      });
+    // Notify the renderer to show the question UI.
+    // Broadcast to all active notifiers (one per concurrent session).
+    // The renderer filters by sessionId to show only the relevant question.
+    if (activeNotifiers.size > 0) {
+      for (const notifier of activeNotifiers) {
+        notifier({
+          questionId,
+          questions,
+        });
+      }
     } else {
       console.error(`[ask_user] No notifier — UI not connected`);
       return {

@@ -76,6 +76,15 @@ const api = {
     allowedTools?: string[]
   }) => ipcRenderer.invoke('agent:create-session', params),
 
+  createDefaultSession: (workingDirectory: string) =>
+    ipcRenderer.invoke('agent:create-default-session', workingDirectory),
+
+  setActiveSession: (sessionId: string) =>
+    ipcRenderer.invoke('agent:set-active-session', sessionId),
+
+  getActiveSession: () =>
+    ipcRenderer.invoke('agent:get-active-session'),
+
   destroySession: (sessionId: string) =>
     ipcRenderer.invoke('agent:destroy-session', sessionId),
 

@@ -363,6 +363,12 @@ export interface ElectronAPI {
     allowedTools?: string[]
   }) => Promise<{ sessionId: string }>
 
+  createDefaultSession: (workingDirectory: string) => Promise<{ sessionId: string }>
+
+  setActiveSession: (sessionId: string) => Promise<{ success: boolean }>
+
+  getActiveSession: () => Promise<ActiveSessionInfo | null>
+
   destroySession: (sessionId: string) => Promise<{ success: boolean }>
 
   getSessionInfo: (sessionId: string) => Promise<ActiveSessionInfo | null>

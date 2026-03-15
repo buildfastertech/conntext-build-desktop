@@ -865,6 +865,18 @@ ipcMain.handle('agent:create-session', async (_event, params: {
   return agentService.createSession(params)
 })
 
+ipcMain.handle('agent:create-default-session', async (_event, workingDirectory: string) => {
+  return agentService.createDefaultSession(workingDirectory)
+})
+
+ipcMain.handle('agent:set-active-session', async (_event, sessionId: string) => {
+  return agentService.setActiveSession(sessionId)
+})
+
+ipcMain.handle('agent:get-active-session', async () => {
+  return agentService.getActiveSession()
+})
+
 ipcMain.handle('agent:destroy-session', async (_event, sessionId: string) => {
   return agentService.destroySession(sessionId)
 })
@@ -925,12 +937,16 @@ function syncToServer(sessionData: {
   workingDirectory: string
   turns: unknown[]
   totalCost: number
+  [key: string]: unknown
 }): void {
   const credentials = authStore.getCredentials()
   if (!credentials) return
 
   const syncStartedAt = Date.now()
   console.log(`[SessionSync] → START sync for session: ${sessionData.sessionId} (turns: ${(sessionData.turns as unknown[]).length}, cost: ${sessionData.totalCost})`)
+
+  // Build the data payload with all session fields, excluding the top-level API fields
+  const { sessionId: _sid, projectId: _pid, featureId: _fid, ...dataPayload } = sessionData
 
   fetch(`${credentials.apiUrl}/api/agent-sessions/sync`, {
     method: 'POST',
@@ -943,14 +959,7 @@ function syncToServer(sessionData: {
       session_id: sessionData.sessionId,
       project_id: sessionData.projectId,
       feature_id: sessionData.featureId ?? null,
-      data: {
-        title: sessionData.title,
-        timestamp: sessionData.timestamp,
-        endTime: sessionData.endTime,
-        workingDirectory: sessionData.workingDirectory,
-        turns: sessionData.turns,
-        totalCost: sessionData.totalCost
-      }
+      data: dataPayload
     })
   })
     .then(res => {

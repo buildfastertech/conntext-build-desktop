@@ -9,7 +9,7 @@ import https from 'https'
 import http from 'http'
 import { VisionService } from './vision-service'
 import { customToolsServer } from './tools'
-import { setQuestionNotifier } from './tools/ask-user'
+import { addQuestionNotifier, removeQuestionNotifier } from './tools/ask-user'
 
 /**
  * An async-iterable message channel that can be pushed to externally.
@@ -208,6 +208,7 @@ export interface SessionSaveData {
 
 export class AgentService {
   private sessions = new Map<string, Session>()
+  private activeSessionId: string | null = null
   private visionService: VisionService | null = null
   private customClaudeCodePath: string | null = null
   private authProvider: AuthProvider | null = null
@@ -282,12 +283,55 @@ export class AgentService {
     return { sessionId: id }
   }
 
+  /**
+   * Create a new session with default configuration.
+   * Convenience method that only requires a working directory — all other
+   * config (system prompt, allowed tools) uses sensible defaults.
+   */
+  createDefaultSession(workingDirectory: string): { sessionId: string } {
+    return this.createSession({ workingDirectory })
+  }
+
+  /**
+   * Set the active session ID. Validates that the session exists in the
+   * sessions map before setting it. Returns success/failure.
+   */
+  setActiveSession(sessionId: string): { success: boolean } {
+    if (!this.sessions.has(sessionId)) {
+      console.warn('[AgentService] setActiveSession: session not found:', sessionId)
+      return { success: false }
+    }
+    this.activeSessionId = sessionId
+    console.log('[AgentService] Active session set to:', sessionId)
+    return { success: true }
+  }
+
+  /**
+   * Get the current active session info, or null if no active session is set
+   * or the active session no longer exists.
+   */
+  getActiveSession(): {
+    id: string
+    sdkSessionId: string | null
+    workingDirectory: string
+    createdAt: Date
+    allowedTools: string[]
+    isProcessing: boolean
+  } | null {
+    if (!this.activeSessionId) return null
+    return this.getSessionInfo(this.activeSessionId)
+  }
+
   destroySession(sessionId: string): { success: boolean } {
     const session = this.sessions.get(sessionId)
     if (session?.abortController) {
       session.abortController.abort()
     }
     this.sessions.delete(sessionId)
+    // Clear active session if it was the one destroyed
+    if (this.activeSessionId === sessionId) {
+      this.activeSessionId = null
+    }
     return { success: true }
   }
 
@@ -764,13 +808,16 @@ Please proceed to complete the user's request using the appropriate tools.`
         console.log('[AgentService] Multi-part content blocks:', promptContent.length)
       }
 
-      // Wire up the ask_user notifier so MCP tool can push question events to the renderer
-      setQuestionNotifier((questionData) => {
+      // Wire up the ask_user notifier so MCP tool can push question events to the renderer.
+      // Each session registers its own notifier; questions are broadcast to all active
+      // notifiers, and the renderer filters by sessionId.
+      const questionNotifier = (questionData: Record<string, unknown>): void => {
         emitEvent({
           event: 'user_question',
           data: questionData
         } as StreamEvent)
-      })
+      }
+      addQuestionNotifier(questionNotifier)
 
       // Wire up abort controller so the frontend can cancel this query
       options.abortController = abortController
@@ -823,8 +870,8 @@ Please proceed to complete the user's request using the appropriate tools.`
       emitEvent({ event: 'error', data: { error: errorMessage } })
       return { sessionId: session.id, success: false }
     } finally {
-      // Clear the question notifier so stale references don't leak
-      setQuestionNotifier(null)
+      // Remove this session's question notifier so stale references don't leak
+      removeQuestionNotifier(questionNotifier)
 
       // Close the input channel so streamInput() finishes and stdin closes
       if (session.inputChannel) {

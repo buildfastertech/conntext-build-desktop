@@ -3,7 +3,7 @@ import { flushSync } from 'react-dom'
 import ReactMarkdown from 'react-markdown'
 import remarkGfm from 'remark-gfm'
 import { toast } from 'sonner'
-import { FolderOpen, Pencil, Check, X, ChevronDown, ChevronUp, RefreshCw, AlertCircle, Layers, Blocks, Lightbulb, Users, Heart, TrendingUp, DollarSign, Cpu, Palette, Link2, Cog, MessageSquare, Hammer, Zap, User, ListTodo, Ticket } from 'lucide-react'
+import { FolderOpen, Pencil, Check, X, ChevronDown, ChevronUp, RefreshCw, AlertCircle, Layers, Blocks, Lightbulb, Users, Heart, TrendingUp, DollarSign, Cpu, Palette, Link2, Cog, MessageSquare, Hammer, Zap, User, ListTodo, Ticket, Plus } from 'lucide-react'
 import Pusher from 'pusher-js'
 import type { StreamEvent, UserInfo, SessionMetadata, Turn, ToolEvent, Workspace, UserQuestion, Project, ProjectFeature, ProductOwner, ActiveTask, ActiveTicket, WebSocketEvent } from '../../../preload/index.d'
 import { ResizablePanes } from '../components/ResizablePanes'
@@ -32,6 +32,18 @@ interface BuildScreenProps {
   workspaces?: Workspace[]
   activeWorkspace?: Workspace | null
   onSwitchWorkspace?: (workspace: Workspace) => void
+}
+
+// Helper functions to scope activeTurnId in localStorage by sessionId.
+// This prevents cross-session contamination when multiple sessions are active concurrently.
+function setActiveTurnIdStorage(sessionId: string, turnId: string): void {
+  localStorage.setItem(`activeTurnId:${sessionId}`, turnId)
+}
+function getActiveTurnIdStorage(sessionId: string): string | null {
+  return localStorage.getItem(`activeTurnId:${sessionId}`)
+}
+function removeActiveTurnIdStorage(sessionId: string): void {
+  localStorage.removeItem(`activeTurnId:${sessionId}`)
 }
 
 export function BuildScreen({ user, onLogout, workingDirectory: initialWorkingDirectory, selectedProject, onBackToProjects: onBackToProjectsFromParent, onWorkingDirectoryChange, workspaces = [], activeWorkspace: activeWorkspaceProp, onSwitchWorkspace: onSwitchWorkspaceProp }: BuildScreenProps) {
@@ -229,6 +241,7 @@ export function BuildScreen({ user, onLogout, workingDirectory: initialWorkingDi
     prevProjectIdRef.current = projectId
 
     // Clear session state so old session doesn't leak into the new project
+    const prevSessionId = sessionIdRef.current
     setTurns([])
     setSessionId(null)
     setSdkSessionId(null)
@@ -244,7 +257,7 @@ export function BuildScreen({ user, onLogout, workingDirectory: initialWorkingDi
     sdkSessionIdRef.current = null
     currentSessionTitleRef.current = ''
     turnsRef.current = []
-    localStorage.removeItem('activeTurnId')
+    if (prevSessionId) removeActiveTurnIdStorage(prevSessionId)
 
     // Reset folder selections for the new project
     if (projectId) {
@@ -336,7 +349,7 @@ export function BuildScreen({ user, onLogout, workingDirectory: initialWorkingDi
               }
 
               // Check if there's an incomplete turn we should reconnect to
-              const storedActiveTurnId = localStorage.getItem('activeTurnId')
+              const storedActiveTurnId = getActiveTurnIdStorage(sessionData.sessionId)
               if (storedActiveTurnId) {
                 const incompleteTurn = sessionData.turns.find(
                   t => t.id === storedActiveTurnId && !t.isComplete
@@ -358,7 +371,7 @@ export function BuildScreen({ user, onLogout, workingDirectory: initialWorkingDi
                         ? { ...t, textBlocks: [...t.textBlocks, '\n\n_Session completed in the background_'], isComplete: true, endTime: Date.now() }
                         : t
                     ))
-                    localStorage.removeItem('activeTurnId')
+                    removeActiveTurnIdStorage(sessionData.sessionId)
                   }
                 }
               }
@@ -403,10 +416,13 @@ export function BuildScreen({ user, onLogout, workingDirectory: initialWorkingDi
     }
   }, [workingDirectory])
 
-  // Save session ID whenever it changes (global + per-project)
+  // Save session ID whenever it changes (global + per-project) and sync with main process
   useEffect(() => {
     if (sessionId) {
       window.api.saveSessionId(sessionId)
+      window.api.setActiveSession(sessionId).catch(err =>
+        console.warn('[BuildScreen] Failed to set active session in main process:', err)
+      )
       if (projectIdRef.current) {
         window.api.saveProjectSessionId(projectIdRef.current, sessionId)
       }
@@ -509,7 +525,7 @@ export function BuildScreen({ user, onLogout, workingDirectory: initialWorkingDi
     // Safe to clear processing flag now - isStreamingRef takes over as guard
     isProcessingQueueRef.current = false
     activeTurnIdRef.current = turnId
-    localStorage.setItem('activeTurnId', turnId)
+    if (sessionIdRef.current) setActiveTurnIdStorage(sessionIdRef.current, turnId)
 
     // Force React to paint the queued message immediately before IPC serialization
     flushSync(() => {
@@ -571,8 +587,8 @@ export function BuildScreen({ user, onLogout, workingDirectory: initialWorkingDi
             : t
         )
       )
-      if (localStorage.getItem('activeTurnId') === turnId) {
-        localStorage.removeItem('activeTurnId')
+      if (sessionIdRef.current && getActiveTurnIdStorage(sessionIdRef.current) === turnId) {
+        removeActiveTurnIdStorage(sessionIdRef.current)
       }
       isStreamingRef.current = false
       setIsStreaming(false)
@@ -842,9 +858,12 @@ export function BuildScreen({ user, onLogout, workingDirectory: initialWorkingDi
             })
           )
           // Token updates handled before turnId check (session-level, not turn-level)
-          // Clear active turn from localStorage when done
-          if (localStorage.getItem('activeTurnId') === turnId) {
-            localStorage.removeItem('activeTurnId')
+          // Clear active turn from localStorage when done (scoped by sessionId)
+          {
+            const evtSessionId = event.sessionId || sessionIdRef.current
+            if (evtSessionId && getActiveTurnIdStorage(evtSessionId) === turnId) {
+              removeActiveTurnIdStorage(evtSessionId)
+            }
           }
           // Clear any remaining pending questions
           setPendingQuestions([])
@@ -866,9 +885,12 @@ export function BuildScreen({ user, onLogout, workingDirectory: initialWorkingDi
               return { ...t, textBlocks: blocks, isComplete: true, endTime: Date.now() }
             })
           )
-          // Clear active turn from localStorage on error
-          if (localStorage.getItem('activeTurnId') === turnId) {
-            localStorage.removeItem('activeTurnId')
+          // Clear active turn from localStorage on error (scoped by sessionId)
+          {
+            const evtSessionId = event.sessionId || sessionIdRef.current
+            if (evtSessionId && getActiveTurnIdStorage(evtSessionId) === turnId) {
+              removeActiveTurnIdStorage(evtSessionId)
+            }
           }
           // Reset streaming state
           isStreamingRef.current = false
@@ -918,8 +940,9 @@ export function BuildScreen({ user, onLogout, workingDirectory: initialWorkingDi
   const handleBackToProjects = () => {
     // Don't abort running sessions — let them continue in the background.
     // When the user returns to this project, handleLoadSession will reconnect.
-    if (sessionIdRef.current && isStreamingRef.current) {
-      console.log('[BuildScreen] Detaching from active session (continues in background):', sessionIdRef.current)
+    const detachingSessionId = sessionIdRef.current
+    if (detachingSessionId && isStreamingRef.current) {
+      console.log('[BuildScreen] Detaching from active session (continues in background):', detachingSessionId)
     }
     setWorkingDirectory(null)
     setTurns([])
@@ -934,7 +957,7 @@ export function BuildScreen({ user, onLogout, workingDirectory: initialWorkingDi
     isStreamingRef.current = false
     setIsStreaming(false)
     setPendingQuestions([])
-    localStorage.removeItem('activeTurnId')
+    if (detachingSessionId) removeActiveTurnIdStorage(detachingSessionId)
 
     // Navigate back to ProjectsScreen via parent callback
     onBackToProjectsFromParent()
@@ -1305,7 +1328,7 @@ This file stores important context and information for the AI agent.
     })
 
     // Persist active turn ID
-    localStorage.setItem('activeTurnId', turnId)
+    if (sessionIdRef.current) setActiveTurnIdStorage(sessionIdRef.current, turnId)
 
     try {
       // Check if MEMORY.md already exists
@@ -1370,8 +1393,8 @@ This file stores important context and information for the AI agent.
 
       loadMemories(workingDirectory)
       // Clear active turn from localStorage
-      if (localStorage.getItem('activeTurnId') === turnId) {
-        localStorage.removeItem('activeTurnId')
+      if (sessionIdRef.current && getActiveTurnIdStorage(sessionIdRef.current) === turnId) {
+        removeActiveTurnIdStorage(sessionIdRef.current)
       }
     } catch (error) {
       setTurns((prev) =>
@@ -1387,8 +1410,8 @@ This file stores important context and information for the AI agent.
         )
       )
       // Clear active turn from localStorage on error
-      if (localStorage.getItem('activeTurnId') === turnId) {
-        localStorage.removeItem('activeTurnId')
+      if (sessionIdRef.current && getActiveTurnIdStorage(sessionIdRef.current) === turnId) {
+        removeActiveTurnIdStorage(sessionIdRef.current)
       }
     } finally {
       isStreamingRef.current = false
@@ -1533,7 +1556,7 @@ This file stores important context and information for the AI agent.
           setIsStreaming(true)
         })
 
-        localStorage.setItem('activeTurnId', turnId)
+        if (sessionIdRef.current) setActiveTurnIdStorage(sessionIdRef.current, turnId)
 
         // Inject a skill_started marker into the session timeline
         if (sessionId) {
@@ -1616,8 +1639,8 @@ This file stores important context and information for the AI agent.
                 : t
             )
           )
-          if (localStorage.getItem('activeTurnId') === turnId) {
-            localStorage.removeItem('activeTurnId')
+          if (sessionIdRef.current && getActiveTurnIdStorage(sessionIdRef.current) === turnId) {
+            removeActiveTurnIdStorage(sessionIdRef.current)
           }
         }).finally(() => {
           isStreamingRef.current = false
@@ -1717,7 +1740,7 @@ You MUST focus your work within these folders. When reading, writing, editing, o
     })
 
     // Persist active turn ID so we can resume after hot reload
-    localStorage.setItem('activeTurnId', turnId)
+    if (sessionIdRef.current) setActiveTurnIdStorage(sessionIdRef.current, turnId)
 
     // Create session ID immediately if this is a new session
     let currentSessionId = sessionId
@@ -1809,8 +1832,8 @@ You MUST focus your work within these folders. When reading, writing, editing, o
         )
       )
       // Clear active turn from localStorage on error
-      if (localStorage.getItem('activeTurnId') === turnId) {
-        localStorage.removeItem('activeTurnId')
+      if (sessionIdRef.current && getActiveTurnIdStorage(sessionIdRef.current) === turnId) {
+        removeActiveTurnIdStorage(sessionIdRef.current)
       }
     } finally {
       isStreamingRef.current = false
@@ -1865,7 +1888,7 @@ You MUST focus your work within these folders. When reading, writing, editing, o
     })
 
     // Persist active turn ID
-    localStorage.setItem('activeTurnId', turnId)
+    if (sessionIdRef.current) setActiveTurnIdStorage(sessionIdRef.current, turnId)
 
     try {
       const memoryPath = getMemoryPath(workingDirectory)
@@ -1891,8 +1914,8 @@ You MUST focus your work within these folders. When reading, writing, editing, o
 
       loadMemories(workingDirectory)
       // Clear active turn from localStorage
-      if (localStorage.getItem('activeTurnId') === turnId) {
-        localStorage.removeItem('activeTurnId')
+      if (sessionIdRef.current && getActiveTurnIdStorage(sessionIdRef.current) === turnId) {
+        removeActiveTurnIdStorage(sessionIdRef.current)
       }
     } catch (error) {
       setTurns((prev) =>
@@ -1908,8 +1931,8 @@ You MUST focus your work within these folders. When reading, writing, editing, o
         )
       )
       // Clear active turn from localStorage on error
-      if (localStorage.getItem('activeTurnId') === turnId) {
-        localStorage.removeItem('activeTurnId')
+      if (sessionIdRef.current && getActiveTurnIdStorage(sessionIdRef.current) === turnId) {
+        removeActiveTurnIdStorage(sessionIdRef.current)
       }
     } finally {
       isStreamingRef.current = false
@@ -1952,6 +1975,9 @@ You MUST focus your work within these folders. When reading, writing, editing, o
   const handleLoadSession = async (loadSessionId: string) => {
     if (!workingDirectory) return
 
+    // Clear pending questions from the previous session
+    setPendingQuestions([])
+
     // First, try to get the live turn state from the main process.
     // This has the most up-to-date data if the session was running in the background.
     let liveState: Awaited<ReturnType<typeof window.api.getActiveTurnState>> = null
@@ -1976,6 +2002,12 @@ You MUST focus your work within these folders. When reading, writing, editing, o
       setSessionId(loadSessionId)
       setSdkSessionId(agentSession.sdkSessionId ?? null)
       setCurrentSessionTitle(liveState.meta.title)
+      // Restore feature context from live meta if available
+      const liveMeta = liveState.meta as Record<string, unknown>
+      if (liveMeta.featureId != null) {
+        setActiveFeatureId(liveMeta.featureId as string)
+        activeFeatureIdRef.current = liveMeta.featureId as string
+      }
 
       if (agentSession.isProcessing && liveState.activeTurn) {
         // Session is still running — reconnect to the event stream
@@ -1983,7 +2015,7 @@ You MUST focus your work within these folders. When reading, writing, editing, o
         activeTurnIdRef.current = liveState.activeTurn.id
         isStreamingRef.current = true
         setIsStreaming(true)
-        localStorage.setItem('activeTurnId', liveState.activeTurn.id)
+        setActiveTurnIdStorage(loadSessionId, liveState.activeTurn.id)
       } else {
         // Session is alive but not processing — all turns are complete
         activeTurnIdRef.current = null
@@ -2021,7 +2053,7 @@ You MUST focus your work within these folders. When reading, writing, editing, o
           activeTurnIdRef.current = incompleteTurn.id
           isStreamingRef.current = true
           setIsStreaming(true)
-          localStorage.setItem('activeTurnId', incompleteTurn.id)
+          setActiveTurnIdStorage(sessionData.sessionId, incompleteTurn.id)
         } else {
           // Session finished while we were away — mark the turn as complete
           console.log('[BuildScreen] Loaded session finished in background, marking complete')
@@ -2050,9 +2082,11 @@ You MUST focus your work within these folders. When reading, writing, editing, o
   }
 
   const handleNewSession = async (): Promise<string> => {
+    // Capture old session ID before clearing so we can clean up its localStorage
+    const oldSessionId = sessionIdRef.current
     // Don't abort the old session — let it continue in the background
-    if (sessionIdRef.current && isStreamingRef.current) {
-      console.log('[BuildScreen] Detaching from active session (continues in background):', sessionIdRef.current)
+    if (oldSessionId && isStreamingRef.current) {
+      console.log('[BuildScreen] Detaching from active session (continues in background):', oldSessionId)
     }
 
     // Generate a new session ID immediately
@@ -2081,7 +2115,7 @@ You MUST focus your work within these folders. When reading, writing, editing, o
     isStreamingRef.current = false
     setIsStreaming(false)
     setPendingQuestions([])
-    localStorage.removeItem('activeTurnId')
+    if (oldSessionId) removeActiveTurnIdStorage(oldSessionId)
 
     // Create the session file on disk immediately with projectId
     if (workingDirectory) {
@@ -2500,8 +2534,8 @@ You MUST focus your work within these folders. When reading, writing, editing, o
     isStreamingRef.current = false
     setIsStreaming(false)
     activeTurnIdRef.current = null
-    if (localStorage.getItem('activeTurnId') === turnId) {
-      localStorage.removeItem('activeTurnId')
+    if (sessionIdRef.current && getActiveTurnIdStorage(sessionIdRef.current) === turnId) {
+      removeActiveTurnIdStorage(sessionIdRef.current)
     }
   }
 
@@ -4068,8 +4102,15 @@ const Header = memo(function Header({
 
   return (
     <div className="flex items-center justify-between border-b border-brand-border/50 px-4 py-1.5">
-      {/* Left: Folder location */}
+      {/* Left: New Session button + Folder location */}
       <div className="flex items-center gap-2">
+        <button
+          onClick={async () => { await onNewSession() }}
+          className="flex items-center justify-center rounded-md bg-brand-purple p-1 text-white transition-colors hover:bg-brand-purple-dim cursor-pointer"
+          title="New Session"
+        >
+          <Plus size={14} />
+        </button>
         <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round" className="text-brand-text-dim">
           <path d="M22 19a2 2 0 0 1-2 2H4a2 2 0 0 1-2-2V5a2 2 0 0 1 2-2h5l2 3h9a2 2 0 0 1 2 2z" />
         </svg>
