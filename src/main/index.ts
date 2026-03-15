@@ -21,7 +21,7 @@ const skillsStore = new SkillsStore()
 
 // Wire up auto-save → server sync: every time AgentService auto-saves to disk, sync to server
 agentService.setOnSessionSaved((data) => {
-  if (data.projectId) {
+  if (data.projectId && appStateStore.getSessionSyncEnabled()) {
     syncToServer({ ...data, projectId: data.projectId })
   }
 })
@@ -287,6 +287,15 @@ ipcMain.handle('app-state:clear-claude-code-path', () => {
 
 ipcMain.handle('app-state:save-active-workspace-id', (_event, workspaceId: string) => {
   appStateStore.saveActiveWorkspaceId(workspaceId)
+  return { success: true }
+})
+
+ipcMain.handle('app-state:get-session-sync-enabled', () => {
+  return appStateStore.getSessionSyncEnabled()
+})
+
+ipcMain.handle('app-state:set-session-sync-enabled', (_event, enabled: boolean) => {
+  appStateStore.setSessionSyncEnabled(enabled)
   return { success: true }
 })
 
@@ -865,6 +874,10 @@ ipcMain.handle('agent:create-session', async (_event, params: {
   return agentService.createSession(params)
 })
 
+ipcMain.handle('agent:create-default-session', async (_event, workingDirectory: string) => {
+  return agentService.createDefaultSession(workingDirectory)
+})
+
 ipcMain.handle('agent:destroy-session', async (_event, sessionId: string) => {
   return agentService.destroySession(sessionId)
 })
@@ -925,12 +938,16 @@ function syncToServer(sessionData: {
   workingDirectory: string
   turns: unknown[]
   totalCost: number
+  [key: string]: unknown
 }): void {
   const credentials = authStore.getCredentials()
   if (!credentials) return
 
   const syncStartedAt = Date.now()
   console.log(`[SessionSync] → START sync for session: ${sessionData.sessionId} (turns: ${(sessionData.turns as unknown[]).length}, cost: ${sessionData.totalCost})`)
+
+  // Build the data payload with all session fields, excluding the top-level API fields
+  const { sessionId: _sid, projectId: _pid, featureId: _fid, ...dataPayload } = sessionData
 
   fetch(`${credentials.apiUrl}/api/agent-sessions/sync`, {
     method: 'POST',
@@ -943,14 +960,7 @@ function syncToServer(sessionData: {
       session_id: sessionData.sessionId,
       project_id: sessionData.projectId,
       feature_id: sessionData.featureId ?? null,
-      data: {
-        title: sessionData.title,
-        timestamp: sessionData.timestamp,
-        endTime: sessionData.endTime,
-        workingDirectory: sessionData.workingDirectory,
-        turns: sessionData.turns,
-        totalCost: sessionData.totalCost
-      }
+      data: dataPayload
     })
   })
     .then(res => {
@@ -966,6 +976,52 @@ function syncToServer(sessionData: {
       console.warn(`[SessionSync] ✗ ERROR sync for session: ${sessionData.sessionId} — ${err.message} (${elapsed}ms)`)
     })
 }
+
+// Patch session metadata on ConnText server (fire-and-forget)
+// Called when starting a feature build to register feature_id before full sync
+function syncSessionMetadata(sessionId: string, metadata: {
+  projectId?: string | null
+  featureId?: string | null
+}): void {
+  const credentials = authStore.getCredentials()
+  if (!credentials) return
+
+  const body: Record<string, string | null> = {}
+  if (metadata.projectId) body.project_id = metadata.projectId
+  if (metadata.featureId) body.feature_id = metadata.featureId
+
+  if (Object.keys(body).length === 0) return
+
+  console.log(`[SessionSync] → PATCH metadata for session: ${sessionId}`, body)
+
+  fetch(`${credentials.apiUrl}/api/sessions/${sessionId}/metadata`, {
+    method: 'PATCH',
+    headers: {
+      'Accept': 'application/json',
+      'Content-Type': 'application/json',
+      'Authorization': `Bearer ${credentials.apiToken}`
+    },
+    body: JSON.stringify(body)
+  })
+    .then(res => {
+      if (res.ok) {
+        console.log(`[SessionSync] ✓ DONE  metadata patch for session: ${sessionId}`)
+      } else {
+        console.warn(`[SessionSync] ✗ FAIL  metadata patch for session: ${sessionId} — ${res.status}`)
+      }
+    })
+    .catch(err => {
+      console.warn(`[SessionSync] ✗ ERROR metadata patch for session: ${sessionId} — ${err.message}`)
+    })
+}
+
+ipcMain.handle('session:update-metadata', async (_event, sessionId: string, metadata: {
+  projectId?: string | null
+  featureId?: string | null
+}) => {
+  syncSessionMetadata(sessionId, metadata)
+  return { success: true }
+})
 
 ipcMain.handle('session:save', async (_event, sessionData: {
   sessionId: string
@@ -1001,8 +1057,8 @@ ipcMain.handle('session:save', async (_event, sessionData: {
     const sessionFile = join(sessionsDir, `${sessionData.sessionId}.json`)
     await writeFile(sessionFile, JSON.stringify(cleanedData, null, 2), 'utf-8')
 
-    // Sync to server (fire-and-forget) on every disk save when a project is selected
-    if (sessionData.projectId) {
+    // Sync to server (fire-and-forget) on every disk save when a project is selected and sync is enabled
+    if (sessionData.projectId && appStateStore.getSessionSyncEnabled()) {
       syncToServer({ ...sessionData, projectId: sessionData.projectId })
     }
 

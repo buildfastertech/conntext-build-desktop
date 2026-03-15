@@ -99,6 +99,14 @@ export class AppStateStore {
     return (this.store.get('windowBounds') as WindowBounds | undefined) ?? null
   }
 
+  getSessionSyncEnabled(): boolean {
+    return (this.store.get('sessionSyncEnabled') as boolean | undefined) ?? false
+  }
+
+  setSessionSyncEnabled(enabled: boolean): void {
+    this.store.set('sessionSyncEnabled', enabled)
+  }
+
   clearAppState(): void {
     this.store.delete('lastWorkingDirectory')
     this.store.delete('lastSessionId')

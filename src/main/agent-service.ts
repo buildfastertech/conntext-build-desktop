@@ -9,7 +9,7 @@ import https from 'https'
 import http from 'http'
 import { VisionService } from './vision-service'
 import { customToolsServer } from './tools'
-import { setQuestionNotifier } from './tools/ask-user'
+import { addQuestionNotifier, removeQuestionNotifier } from './tools/ask-user'
 
 /**
  * An async-iterable message channel that can be pushed to externally.
@@ -172,6 +172,12 @@ interface Session {
   _activeBlockType?: string | null
   /** Input tokens from the last assistant message (API call) — represents current context window usage */
   _lastInputTokens?: number
+  /** Timestamp when isProcessing was set to true — used for timeout-based stale detection */
+  _processingStartedAt?: number
+  /** Monotonically increasing counter — each sendMessage call gets its own generation.
+   *  The finally block only clears processing state if the generation still matches,
+   *  preventing a stale finally block from clobbering a newer sendMessage's state. */
+  _processingGeneration: number
 }
 
 const DEFAULT_TOOLS = ['Read', 'Write', 'Edit', 'Glob', 'Grep', 'Bash', 'mcp__customTools__code_review', 'mcp__customTools__ask_user']
@@ -275,11 +281,21 @@ export class AgentService {
       lastQuery: null,
       inputChannel: null,
       activeTurn: null,
-      meta: null
+      meta: null,
+      _processingGeneration: 0
     })
 
     console.log('[AgentService] Session created:', id, '| Total sessions:', this.sessions.size)
     return { sessionId: id }
+  }
+
+  /**
+   * Create a new session with default configuration.
+   * Convenience method that only requires a working directory — all other
+   * config (system prompt, allowed tools) uses sensible defaults.
+   */
+  createDefaultSession(workingDirectory: string): { sessionId: string } {
+    return this.createSession({ workingDirectory })
   }
 
   destroySession(sessionId: string): { success: boolean } {
@@ -525,7 +541,8 @@ Please proceed to complete the user's request using the appropriate tools.`
           lastQuery: null,
           inputChannel: null,
           activeTurn: null,
-          meta: null
+          meta: null,
+          _processingGeneration: 0
         })
         session = this.sessions.get(params.sessionId)!
       }
@@ -540,25 +557,52 @@ Please proceed to complete the user's request using the appropriate tools.`
       session = this.sessions.get(sessionId)!
     }
 
-    // If already processing, queue this message
+    // If already processing, check for stale processing state.
+    // There are three stale conditions we detect:
+    //
+    // 1. abortController AND inputChannel are both null — the stream was cleaned up
+    //    but isProcessing wasn't cleared (e.g. iterator.return() hung on Windows).
+    //
+    // 2. activeTurn is null — the 'done' event was processed (turn completed) but
+    //    the finally block hasn't run yet. This happens when await iterator.next()
+    //    hangs after the result message, preventing the while loop from breaking.
+    //    Since activeTurn is only cleared by the done/error event (which fires from
+    //    the result message handler), a null activeTurn means the work is done.
+    //
+    // 3. Processing has been stuck for > 3 minutes — timeout-based fallback for any
+    //    other edge case we haven't anticipated.
     if (session.isProcessing) {
-      console.log('[AgentService] Session is already processing, queuing message (queue length:', session.messageQueue.length, ')')
-      return new Promise<{ sessionId: string; success: boolean }>((resolve, reject) => {
-        session.messageQueue.push({
-          params,
-          onEvent,
-          resolve,
-          reject
+      const staleReason = this.detectStaleProcessing(session)
+      if (staleReason) {
+        console.warn(`[AgentService] Detected stale isProcessing — ${staleReason} (session: ${session.id})`)
+        this.forceCleanupSession(session)
+      } else {
+        console.log('[AgentService] Session is already processing, queuing message (queue length:', session.messageQueue.length, ')',
+          '| hasAbortController:', !!session.abortController,
+          '| hasInputChannel:', !!session.inputChannel,
+          '| hasActiveTurn:', !!session.activeTurn,
+          '| processingFor:', session._processingStartedAt ? `${Math.round((Date.now() - session._processingStartedAt) / 1000)}s` : 'unknown')
+        return new Promise<{ sessionId: string; success: boolean }>((resolve, reject) => {
+          session.messageQueue.push({
+            params,
+            onEvent,
+            resolve,
+            reject
+          })
+          onEvent({
+            event: 'system',
+            data: { message: `Message queued (position ${session.messageQueue.length} in queue)` }
+          })
         })
-        onEvent({
-          event: 'system',
-          data: { message: `Message queued (position ${session.messageQueue.length} in queue)` }
-        })
-      })
+      }
     }
 
-    // Mark session as processing and create abort controller
+    // Mark session as processing and create abort controller.
+    // Increment the generation so the finally block can tell if it still owns the state.
     session.isProcessing = true
+    session._processingStartedAt = Date.now()
+    session._processingGeneration++
+    const myGeneration = session._processingGeneration
     const abortController = new AbortController()
     session.abortController = abortController
 
@@ -617,6 +661,16 @@ Please proceed to complete the user's request using the appropriate tools.`
       this.accumulateTurnEvent(session, event)
       onEvent({ ...event, sessionId: session.id, turnId })
     }
+
+    // Wire up the ask_user notifier so MCP tool can push question events to the renderer.
+    // Declared outside try so it's accessible in finally for cleanup.
+    const questionNotifier = (questionData: Record<string, unknown>): void => {
+      emitEvent({
+        event: 'user_question',
+        data: questionData
+      } as StreamEvent)
+    }
+    addQuestionNotifier(questionNotifier)
 
     try {
       const claudePath = findClaudeExecutable(this.customClaudeCodePath)
@@ -764,14 +818,6 @@ Please proceed to complete the user's request using the appropriate tools.`
         console.log('[AgentService] Multi-part content blocks:', promptContent.length)
       }
 
-      // Wire up the ask_user notifier so MCP tool can push question events to the renderer
-      setQuestionNotifier((questionData) => {
-        emitEvent({
-          event: 'user_question',
-          data: questionData
-        } as StreamEvent)
-      })
-
       // Wire up abort controller so the frontend can cancel this query
       options.abortController = abortController
 
@@ -805,15 +851,30 @@ Please proceed to complete the user's request using the appropriate tools.`
       // Store the query object so we can call rewindFiles() later
       session.lastQuery = stream
 
-      for await (const message of stream) {
-        this.handleSDKMessage(message, session, emitEvent)
-        // Break immediately on result so the finally block clears isProcessing
-        // before the next sendMessage call arrives. Without this, the stream
-        // may linger open after the result, leaving isProcessing=true and
-        // causing subsequent messages to be incorrectly queued.
-        if (message.type === 'result') {
-          break
+      // Use manual iteration instead of for-await + break.
+      // When for-await breaks, it calls iterator.return() and AWAITS it.
+      // If the SDK subprocess cleanup hangs (common on Windows), this blocks
+      // the finally block from clearing isProcessing, causing all subsequent
+      // messages to be incorrectly queued.
+      const iterator = stream[Symbol.asyncIterator]()
+      try {
+        while (true) {
+          const { value: message, done } = await iterator.next()
+          if (done) {
+            console.log('[AgentService] Iterator returned done for session:', session.id)
+            break
+          }
+          this.handleSDKMessage(message, session, emitEvent)
+          if (message.type === 'result') {
+            console.log('[AgentService] Result message received, breaking loop for session:', session.id)
+            // Fire-and-forget the iterator cleanup — don't block on it
+            Promise.resolve(iterator.return?.()).catch(() => {})
+            break
+          }
         }
+      } catch (iterError) {
+        // Re-throw to be caught by the outer catch block
+        throw iterError
       }
 
       return { sessionId: session.id, success: true }
@@ -823,31 +884,98 @@ Please proceed to complete the user's request using the appropriate tools.`
       emitEvent({ event: 'error', data: { error: errorMessage } })
       return { sessionId: session.id, success: false }
     } finally {
-      // Clear the question notifier so stale references don't leak
-      setQuestionNotifier(null)
+      // Remove this session's question notifier so stale references don't leak
+      removeQuestionNotifier(questionNotifier)
 
-      // Close the input channel so streamInput() finishes and stdin closes
-      if (session.inputChannel) {
-        session.inputChannel.close()
-        session.inputChannel = null
-      }
+      // Only clear processing state if this sendMessage call still owns the session.
+      // If forceCleanupSession already ran and a NEWER sendMessage took over,
+      // the generation will have advanced and we must NOT clobber the new state.
+      if (session._processingGeneration === myGeneration) {
+        // Close the input channel so streamInput() finishes and stdin closes
+        if (session.inputChannel) {
+          session.inputChannel.close()
+          session.inputChannel = null
+        }
 
-      // Clear processing flag and abort controller
-      session.isProcessing = false
-      session.abortController = null
-      console.log('[AgentService] Cleared processing flag for session:', session.id)
+        // Clear processing flag and abort controller
+        session.isProcessing = false
+        session.abortController = null
+        session._processingStartedAt = undefined
+        console.log('[AgentService] Cleared processing flag for session:', session.id, '(generation:', myGeneration, ')')
 
-      // Process next queued message if any
-      if (session.messageQueue.length > 0) {
-        console.log('[AgentService] Processing next queued message (', session.messageQueue.length, 'messages in queue)')
-        const nextMessage = session.messageQueue.shift()!
+        // Process next queued message if any
+        if (session.messageQueue.length > 0) {
+          console.log('[AgentService] Processing next queued message (', session.messageQueue.length, 'messages in queue)')
+          const nextMessage = session.messageQueue.shift()!
 
-        // Process the queued message asynchronously
-        this.sendMessage(nextMessage.params, nextMessage.onEvent)
-          .then(nextMessage.resolve)
-          .catch(nextMessage.reject)
+          // Process the queued message asynchronously
+          this.sendMessage(nextMessage.params, nextMessage.onEvent)
+            .then(nextMessage.resolve)
+            .catch(nextMessage.reject)
+        }
+      } else {
+        console.log('[AgentService] Skipping finally cleanup — generation mismatch (mine:', myGeneration, ', current:', session._processingGeneration, ') for session:', session.id)
       }
     }
+  }
+
+  /**
+   * Detect whether a session's isProcessing flag is stale (stuck).
+   * Returns a descriptive reason string if stale, or null if legitimately processing.
+   */
+  private detectStaleProcessing(session: Session): string | null {
+    // Condition 1: Stream already cleaned up but flag wasn't cleared
+    if (!session.abortController && !session.inputChannel) {
+      return 'stream cleaned up (no abortController or inputChannel)'
+    }
+
+    // Condition 2: Turn completed (done/error event processed) but finally block didn't run.
+    // activeTurn is only set to null by accumulateTurnEvent when done/error fires,
+    // which means the agent's work is complete but the iterator is hanging.
+    if (!session.activeTurn) {
+      return 'turn completed (activeTurn is null) but finally block did not run'
+    }
+
+    // Condition 3: Timeout — processing stuck for > 3 minutes
+    if (session._processingStartedAt) {
+      const elapsedMs = Date.now() - session._processingStartedAt
+      if (elapsedMs > 3 * 60 * 1000) {
+        return `processing timeout (${Math.round(elapsedMs / 1000)}s elapsed)`
+      }
+    }
+
+    return null
+  }
+
+  /**
+   * Force-cleanup a session's processing state.
+   * Used when stale processing is detected — aborts the query and clears all flags.
+   */
+  private forceCleanupSession(session: Session): void {
+    // Abort the running query if possible
+    if (session.abortController) {
+      try {
+        session.abortController.abort()
+      } catch {
+        // Ignore abort errors
+      }
+      session.abortController = null
+    }
+
+    // Close the input channel
+    if (session.inputChannel) {
+      try {
+        session.inputChannel.close()
+      } catch {
+        // Ignore close errors
+      }
+      session.inputChannel = null
+    }
+
+    // Clear processing state
+    session.isProcessing = false
+    session._processingStartedAt = undefined
+    session.activeTurn = null
   }
 
   /**
@@ -1159,11 +1287,10 @@ Please proceed to complete the user's request using the appropriate tools.`
       allTurns.push({ ...session.activeTurn })
     }
 
-    // Filter empty strings from textBlocks to avoid wasting space in the JSON
-    const cleanedTurns = allTurns.map(turn => ({
-      ...turn,
-      textBlocks: turn.textBlocks.filter(block => block !== '')
-    }))
+    // Preserve textBlocks array as-is — the indices are positional markers
+    // that correspond to tool group positions. Filtering empties collapses the
+    // array, breaking the final-response-bubble detection on reload.
+    const cleanedTurns = allTurns
 
     const projectId = session.meta.projectId || null
     const featureId = session.meta.featureId || null

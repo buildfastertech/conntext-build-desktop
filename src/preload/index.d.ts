@@ -314,6 +314,8 @@ export interface ElectronAPI {
   getClaudeCodePath: () => Promise<string | null>
   clearClaudeCodePath: () => Promise<{ success: boolean }>
   saveActiveWorkspaceId: (workspaceId: string) => Promise<{ success: boolean }>
+  getSessionSyncEnabled: () => Promise<boolean>
+  setSessionSyncEnabled: (enabled: boolean) => Promise<{ success: boolean }>
 
   // Folder selection
   selectFolder: () => Promise<string | null>
@@ -363,6 +365,8 @@ export interface ElectronAPI {
     allowedTools?: string[]
   }) => Promise<{ sessionId: string }>
 
+  createDefaultSession: (workingDirectory: string) => Promise<{ sessionId: string }>
+
   destroySession: (sessionId: string) => Promise<{ success: boolean }>
 
   getSessionInfo: (sessionId: string) => Promise<ActiveSessionInfo | null>
@@ -379,6 +383,7 @@ export interface ElectronAPI {
   listSessions: (workingDirectory: string, projectId?: string | null) => Promise<SessionMetadata[]>
   deleteSession: (workingDirectory: string, sessionId: string, projectId?: string | null) => Promise<{ success: boolean }>
   renameSession: (workingDirectory: string, sessionId: string, newTitle: string, projectId?: string | null) => Promise<{ success: boolean }>
+  updateSessionMetadata: (sessionId: string, metadata: { projectId?: string | null; featureId?: string | null }) => Promise<{ success: boolean }>
 
   // Skills
   syncSkills: (apiUrl: string, apiToken: string) => Promise<SkillsSyncResult>

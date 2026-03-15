@@ -19,6 +19,9 @@ export function SettingsDialog({ isOpen, onClose }: SettingsDialogProps) {
   const [isEditingPath, setIsEditingPath] = useState(false)
   const [pathSaveStatus, setPathSaveStatus] = useState<'idle' | 'success' | 'error'>('idle')
 
+  // Session sync state
+  const [sessionSyncEnabled, setSessionSyncEnabled] = useState(false)
+
   useEffect(() => {
     if (isOpen) {
       // Load current key status
@@ -41,6 +44,9 @@ export function SettingsDialog({ isOpen, onClose }: SettingsDialogProps) {
         setIsEditingPath(false)
         setPathSaveStatus('idle')
       })
+
+      // Load session sync setting
+      window.api.getSessionSyncEnabled().then(setSessionSyncEnabled)
     }
   }, [isOpen])
 
@@ -411,6 +417,41 @@ export function SettingsDialog({ isOpen, onClose }: SettingsDialogProps) {
                   </button>
                 </>
               )}
+            </div>
+          </div>
+
+          {/* Divider */}
+          <div className="my-6 border-t border-brand-border" />
+
+          {/* Session Sync */}
+          <div>
+            <div className="flex items-center justify-between">
+              <div>
+                <label className="text-[12px] font-medium uppercase tracking-wider text-brand-text-dim">
+                  Session Sync
+                </label>
+                <p className="mt-1 text-[11px] leading-relaxed text-brand-text-dim/80">
+                  Sync session data to the ConnText platform when a project is selected.
+                </p>
+              </div>
+              <button
+                onClick={async () => {
+                  const next = !sessionSyncEnabled
+                  setSessionSyncEnabled(next)
+                  await window.api.setSessionSyncEnabled(next)
+                }}
+                className={`relative inline-flex h-5 w-9 shrink-0 cursor-pointer items-center rounded-full transition-colors duration-200 ${
+                  sessionSyncEnabled ? 'bg-brand-purple' : 'bg-brand-border'
+                }`}
+                role="switch"
+                aria-checked={sessionSyncEnabled}
+              >
+                <span
+                  className={`inline-block h-3.5 w-3.5 rounded-full bg-white shadow-sm transition-transform duration-200 ${
+                    sessionSyncEnabled ? 'translate-x-[18px]' : 'translate-x-[3px]'
+                  }`}
+                />
+              </button>
             </div>
           </div>
         </div>

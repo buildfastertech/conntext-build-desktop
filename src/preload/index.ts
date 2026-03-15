@@ -30,6 +30,8 @@ const api = {
   getClaudeCodePath: () => ipcRenderer.invoke('app-state:get-claude-code-path'),
   clearClaudeCodePath: () => ipcRenderer.invoke('app-state:clear-claude-code-path'),
   saveActiveWorkspaceId: (workspaceId: string) => ipcRenderer.invoke('app-state:save-active-workspace-id', workspaceId),
+  getSessionSyncEnabled: () => ipcRenderer.invoke('app-state:get-session-sync-enabled') as Promise<boolean>,
+  setSessionSyncEnabled: (enabled: boolean) => ipcRenderer.invoke('app-state:set-session-sync-enabled', enabled),
 
   // Folder selection
   selectFolder: () => ipcRenderer.invoke('dialog:select-folder'),
@@ -76,6 +78,9 @@ const api = {
     allowedTools?: string[]
   }) => ipcRenderer.invoke('agent:create-session', params),
 
+  createDefaultSession: (workingDirectory: string) =>
+    ipcRenderer.invoke('agent:create-default-session', workingDirectory),
+
   destroySession: (sessionId: string) =>
     ipcRenderer.invoke('agent:destroy-session', sessionId),
 
@@ -102,6 +107,8 @@ const api = {
     ipcRenderer.invoke('session:delete', workingDirectory, sessionId, projectId),
   renameSession: (workingDirectory: string, sessionId: string, newTitle: string, projectId?: string | null) =>
     ipcRenderer.invoke('session:rename', workingDirectory, sessionId, newTitle, projectId),
+  updateSessionMetadata: (sessionId: string, metadata: { projectId?: string | null; featureId?: string | null }) =>
+    ipcRenderer.invoke('session:update-metadata', sessionId, metadata),
 
   // Skills
   syncSkills: (apiUrl: string, apiToken: string) =>
