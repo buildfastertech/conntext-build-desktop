@@ -81,6 +81,8 @@ export function BuildScreen({ user, onLogout, workingDirectory: initialWorkingDi
   const [skillsLastSync, setSkillsLastSync] = useState<string | null>(null)
   const [isSyncingSkills, setIsSyncingSkills] = useState(false)
   const [syncSkillsMessage, setSyncSkillsMessage] = useState<{ type: 'success' | 'error' | 'info'; text: string } | null>(null)
+  const [skillsList, setSkillsList] = useState<Array<{ id: string; title: string; version_number: number }>>([])
+  const [lastSyncPartialFailure, setLastSyncPartialFailure] = useState(false)
   const [selectedModel, setSelectedModel] = useState(() => localStorage.getItem('selectedModel') || 'claude-sonnet-4-5-20250929')
   const [isModelDropdownOpen, setIsModelDropdownOpen] = useState(false)
   const selectedModelRef = useRef(localStorage.getItem('selectedModel') || 'claude-sonnet-4-5-20250929')
@@ -967,11 +969,14 @@ export function BuildScreen({ user, onLogout, workingDirectory: initialWorkingDi
       setSkillsCount(info.count)
       setSkillsVersion(info.version)
       setSkillsLastSync(info.lastSync)
+      const list = await window.api.listSkills()
+      setSkillsList(list)
     } catch (error) {
       console.error('Failed to load skills info:', error)
       setSkillsCount(0)
       setSkillsVersion(0)
       setSkillsLastSync(null)
+      setSkillsList([])
     }
   }
 
@@ -1219,15 +1224,19 @@ export function BuildScreen({ user, onLogout, workingDirectory: initialWorkingDi
       }
 
       const result = await window.api.syncSkills(credentials.apiUrl, credentials.apiToken)
+      setLastSyncPartialFailure(result.partialFailure === true)
       if (result.success) {
         await loadSkillsInfo()
         if (result.updated) {
-          setSyncSkillsMessage({ type: 'success', text: `✅ Successfully synced ${result.count} skills` })
+          setSyncSkillsMessage({ type: 'success', text: `Successfully synced ${result.count} skills` })
         } else if (result.count === 0) {
           setSyncSkillsMessage({ type: 'info', text: 'No skills available on ConnText platform yet' })
         } else {
-          setSyncSkillsMessage({ type: 'success', text: `✅ Already up to date - ${result.count} skills available` })
+          setSyncSkillsMessage({ type: 'success', text: `Already up to date - ${result.count} skills available` })
         }
+      } else if (result.partialFailure) {
+        await loadSkillsInfo()
+        setSyncSkillsMessage({ type: 'error', text: result.error || 'Some skills failed to sync' })
       } else {
         setSyncSkillsMessage({ type: 'error', text: result.error || 'Failed to sync skills' })
       }
@@ -2719,6 +2728,8 @@ You MUST focus your work within these folders. When reading, writing, editing, o
           skillsLastSync={skillsLastSync}
           isSyncingSkills={isSyncingSkills}
           onSyncSkills={handleSyncSkills}
+          skillsList={skillsList}
+          lastSyncPartialFailure={lastSyncPartialFailure}
           wsStatus={wsStatus}
         />
         <Header
@@ -3739,6 +3750,8 @@ You MUST focus your work within these folders. When reading, writing, editing, o
         skillsLastSync={skillsLastSync}
         isSyncingSkills={isSyncingSkills}
         onSyncSkills={handleSyncSkills}
+        skillsList={skillsList}
+        lastSyncPartialFailure={lastSyncPartialFailure}
         wsStatus={wsStatus}
       />
       <Header

@@ -380,6 +380,7 @@ export interface ElectronAPI {
   syncSkills: (apiUrl: string, apiToken: string) => Promise<SkillsSyncResult>
   checkAndSyncSkills: (apiUrl: string, apiToken: string) => Promise<SkillsSyncResult>
   getSkillsInfo: () => Promise<SkillsInfo>
+  listSkills: () => Promise<Array<{ id: string; title: string; version_number: number }>>
   clearSkills: () => Promise<{ success: boolean }>
 
   // Workspaces

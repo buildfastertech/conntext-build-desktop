@@ -472,6 +472,10 @@ ipcMain.handle('skills:get-info', async () => {
   }
 })
 
+ipcMain.handle('skills:list', async () => {
+  return skillsStore.getSkillsList()
+})
+
 ipcMain.handle('skills:clear', async () => {
   await skillsStore.clearSkills()
   return { success: true }

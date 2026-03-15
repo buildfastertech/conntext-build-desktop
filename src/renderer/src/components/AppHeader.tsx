@@ -1,5 +1,5 @@
 import { useState, useEffect, useRef } from 'react'
-import { Brain, FolderOpen, Zap, RefreshCw, ChevronDown, Building2, User, Check, ArrowLeft, Radio } from 'lucide-react'
+import { Brain, FolderOpen, Zap, RefreshCw, ChevronDown, Building2, User, Check, ArrowLeft, Radio, AlertTriangle } from 'lucide-react'
 import type { UserInfo, Workspace } from '../../../preload/index.d'
 
 interface AppHeaderProps {
@@ -23,6 +23,8 @@ interface AppHeaderProps {
     skillsLastSync?: string | null
     isSyncingSkills?: boolean
     onSyncSkills?: () => void
+    skillsList?: Array<{ id: string; title: string; version_number: number }>
+    lastSyncPartialFailure?: boolean
     wsStatus?: 'disconnected' | 'connecting' | 'connected' | 'error'
 }
 
@@ -43,6 +45,8 @@ export function AppHeader({
     skillsLastSync = null,
     isSyncingSkills = false,
     onSyncSkills,
+    skillsList = [],
+    lastSyncPartialFailure = false,
     wsStatus = 'disconnected'
 }: AppHeaderProps) {
     const [showMenu, setShowMenu] = useState(false)
@@ -94,6 +98,22 @@ export function AppHeader({
     const getDirectoryName = (dir: string) => {
         const parts = dir.replace(/\\/g, '/').split('/')
         return parts[parts.length - 1] || parts[parts.length - 2] || dir
+    }
+
+    const timeAgo = (dateString: string): string => {
+        const now = Date.now()
+        const then = new Date(dateString).getTime()
+        const seconds = Math.floor((now - then) / 1000)
+
+        if (seconds < 60) return 'Just now'
+        const minutes = Math.floor(seconds / 60)
+        if (minutes < 60) return `${minutes} minute${minutes !== 1 ? 's' : ''} ago`
+        const hours = Math.floor(minutes / 60)
+        if (hours < 24) return `${hours} hour${hours !== 1 ? 's' : ''} ago`
+        const days = Math.floor(hours / 24)
+        if (days === 1) return 'Yesterday'
+        if (days < 7) return `${days} days ago`
+        return new Date(dateString).toLocaleDateString()
     }
 
     const wsInitial = activeWorkspace?.name?.charAt(0)?.toUpperCase() ?? '?'
@@ -307,7 +327,7 @@ export function AppHeader({
                         </button>
 
                         {showSkillsPopover && (
-                            <div className="absolute right-0 top-full z-50 mt-2 w-64 overflow-hidden rounded-xl border border-brand-border/60 bg-[#12121a] shadow-2xl shadow-black/50">
+                            <div className="absolute right-0 top-full z-50 mt-2 w-72 overflow-hidden rounded-xl border border-brand-border/60 bg-[#12121a] shadow-2xl shadow-black/50">
                                 <div className="border-b border-brand-border/30 px-4 py-3">
                                     <div className="flex items-center gap-2">
                                         <Zap className="h-4 w-4 text-brand-purple" />
@@ -326,10 +346,41 @@ export function AppHeader({
                                     <div className="flex items-center justify-between">
                                         <span>Last synced:</span>
                                         <span className="font-medium text-brand-text">
-                                            {skillsLastSync ? new Date(skillsLastSync).toLocaleDateString() : 'Never'}
+                                            {skillsLastSync ? timeAgo(skillsLastSync) : 'Never'}
                                         </span>
                                     </div>
                                 </div>
+
+                                {/* Partial sync warning */}
+                                {lastSyncPartialFailure && (
+                                    <div className="mx-4 mb-3 flex items-center gap-2 rounded-lg bg-amber-500/10 px-3 py-2 text-xs text-amber-400">
+                                        <AlertTriangle size={13} className="shrink-0" />
+                                        <span>Partial sync — some skills failed to download</span>
+                                    </div>
+                                )}
+
+                                {/* Skills list */}
+                                {skillsList.length > 0 && (
+                                    <div className="border-t border-brand-border/30">
+                                        <div className="px-4 py-2">
+                                            <p className="text-[10px] font-semibold uppercase tracking-[0.12em] text-brand-text-dim/70">
+                                                Installed Skills
+                                            </p>
+                                        </div>
+                                        <div className="max-h-[200px] overflow-y-auto px-2 pb-2">
+                                            {skillsList.map((skill) => (
+                                                <div
+                                                    key={skill.id}
+                                                    className="flex items-center justify-between rounded-lg px-2 py-1.5 text-xs hover:bg-white/[0.02]"
+                                                >
+                                                    <span className="truncate text-brand-text-muted">{skill.title}</span>
+                                                    <span className="ml-2 shrink-0 text-[10px] text-brand-text-dim">v{skill.version_number}</span>
+                                                </div>
+                                            ))}
+                                        </div>
+                                    </div>
+                                )}
+
                                 <div className="border-t border-brand-border/30 px-4 py-3">
                                     <button
                                         onClick={() => {
@@ -340,7 +391,7 @@ export function AppHeader({
                                         className="w-full cursor-pointer rounded-lg bg-brand-purple/10 px-3 py-2 text-xs font-medium text-brand-purple transition-colors hover:bg-brand-purple/20 disabled:cursor-not-allowed disabled:opacity-50 flex items-center justify-center gap-1.5"
                                     >
                                         <RefreshCw size={12} className={isSyncingSkills ? 'animate-spin' : ''} />
-                                        {isSyncingSkills ? 'Syncing...' : 'Sync Skills'}
+                                        {isSyncingSkills ? 'Sync in progress...' : 'Sync Skills'}
                                     </button>
                                 </div>
                             </div>

@@ -499,6 +499,15 @@ export class SkillsStore {
   }
 
   /**
+   * Get a list of all locally known skills with their id, title, and version
+   */
+  async getSkillsList(): Promise<Array<{ id: string; title: string; version_number: number }>> {
+    const metadata = await this.readMetadata()
+    if (!metadata) return []
+    return Object.values(metadata.skills)
+  }
+
+  /**
    * Clear all skills
    */
   async clearSkills(): Promise<void> {

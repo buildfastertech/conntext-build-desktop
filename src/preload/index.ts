@@ -109,6 +109,8 @@ const api = {
     ipcRenderer.invoke('skills:check-and-sync', apiUrl, apiToken),
   getSkillsInfo: () =>
     ipcRenderer.invoke('skills:get-info'),
+  listSkills: () =>
+    ipcRenderer.invoke('skills:list'),
   clearSkills: () =>
     ipcRenderer.invoke('skills:clear'),
 
