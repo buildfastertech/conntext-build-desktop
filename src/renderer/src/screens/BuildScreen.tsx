@@ -1593,6 +1593,47 @@ This file stores important context and information for the AI agent.
         return
       }
 
+      if (command === '/rename') {
+        const newTitle = args.trim()
+        if (!newTitle) {
+          const turnId = crypto.randomUUID()
+          setTurns((prev) => [
+            ...prev,
+            {
+              id: turnId,
+              userMessage: trimmedInput,
+              textBlocks: ['Usage: `/rename <new name>`'],
+              toolEvents: [],
+              isComplete: true,
+              startTime: Date.now(),
+              endTime: Date.now(),
+              costUsd: null
+            }
+          ])
+          setInput('')
+          return
+        }
+        if (sessionId) {
+          await handleRenameSession(sessionId, newTitle)
+          const turnId = crypto.randomUUID()
+          setTurns((prev) => [
+            ...prev,
+            {
+              id: turnId,
+              userMessage: trimmedInput,
+              textBlocks: [`Session renamed to **${newTitle}**`],
+              toolEvents: [],
+              isComplete: true,
+              startTime: Date.now(),
+              endTime: Date.now(),
+              costUsd: null
+            }
+          ])
+        }
+        setInput('')
+        return
+      }
+
       // Handle skills - dynamically resolve any /command against local skills directory
       const skillName = command.replace('/', '')
       const skillContent = await window.api.resolveSkill(skillName)
@@ -1729,27 +1770,8 @@ This file stores important context and information for the AI agent.
         return
       }
 
-      // Unknown command
-      const turnId = crypto.randomUUID()
-      const availableCommands = SLASH_COMMANDS.map(cmd =>
-        `- ${cmd.command} ${cmd.args} - ${cmd.description}`
-      ).join('\n')
-
-      setTurns((prev) => [
-        ...prev,
-        {
-          id: turnId,
-          userMessage: trimmedInput,
-          textBlocks: [`Unknown command: ${command}\n\nAvailable commands:\n${availableCommands}`],
-          toolEvents: [],
-          isComplete: true,
-          startTime: Date.now(),
-          endTime: Date.now(),
-          costUsd: null
-        }
-      ])
-      setInput('')
-      return
+      // Unrecognised slash command — fall through to send as a normal message
+      // (may be a system-level command handled by the agent)
     }
 
     // Check if user wants to save to memory (explicit command)
@@ -2580,6 +2602,7 @@ You MUST focus your work within these folders. When reading, writing, editing, o
   // Available slash commands — built-in + dynamically loaded skills
   const BUILTIN_COMMANDS = [
     { command: '/init', description: 'Initialize project memory & copy skills', args: '' },
+    { command: '/rename', description: 'Rename the current session', args: '<new name>' },
   ]
 
   // Merge built-in commands with dynamically loaded skills from userData/skills/
@@ -2892,8 +2915,8 @@ You MUST focus your work within these folders. When reading, writing, editing, o
       }
     }
 
-    // Shift+Enter: Queue the message for later processing
-    if (e.key === 'Enter' && e.shiftKey) {
+    // Shift+Q: Queue the message for later processing
+    if (e.key === 'Q' && e.shiftKey) {
       e.preventDefault()
       const trimmedInput = input.trim()
       if (trimmedInput || pastedImages.length > 0) {
@@ -2906,6 +2929,12 @@ You MUST focus your work within these folders. When reading, writing, editing, o
           inputRef.current.style.height = 'auto'
         }
       }
+      return
+    }
+
+    // Shift+Enter: Insert newline (textarea auto-resizes via onInput)
+    if (e.key === 'Enter' && e.shiftKey) {
+      // Allow default behavior (inserts newline)
       return
     }
 
