@@ -428,6 +428,9 @@ export interface ElectronAPI {
 
   // File utilities
   getPathForFile: (file: File) => string
+
+  // Platform info
+  platform: NodeJS.Platform
 }
 
 declare global {

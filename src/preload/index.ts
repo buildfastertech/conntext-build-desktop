@@ -171,7 +171,10 @@ const api = {
   },
 
   // File utilities
-  getPathForFile: (file: File) => webUtils.getPathForFile(file)
+  getPathForFile: (file: File) => webUtils.getPathForFile(file),
+
+  // Platform info
+  platform: process.platform
 }
 
 contextBridge.exposeInMainWorld('api', api)

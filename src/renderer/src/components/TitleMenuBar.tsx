@@ -64,6 +64,7 @@ export function TitleMenuBar({ onOpenFolder }: TitleMenuBarProps) {
     const [openMenu, setOpenMenu] = useState<number | null>(null)
     const [hovering, setHovering] = useState(false)
     const barRef = useRef<HTMLDivElement>(null)
+    const isMac = window.api.platform === 'darwin'
 
     const closeMenu = () => {
         setOpenMenu(null)
@@ -115,7 +116,7 @@ export function TitleMenuBar({ onOpenFolder }: TitleMenuBarProps) {
         <div
             ref={barRef}
             className="relative z-[9999] flex h-[44px] items-center bg-[#0e0e14] select-none"
-            style={{ WebkitAppRegion: 'drag' } as React.CSSProperties}
+            style={{ WebkitAppRegion: 'drag', paddingLeft: isMac ? 70 : 0 } as React.CSSProperties}
         >
             {/* App icon */}
             <div className="flex items-center justify-center w-12 h-full">

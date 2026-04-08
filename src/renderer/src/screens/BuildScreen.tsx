@@ -3,7 +3,7 @@ import { flushSync } from 'react-dom'
 import ReactMarkdown from 'react-markdown'
 import remarkGfm from 'remark-gfm'
 import { toast } from 'sonner'
-import { FolderOpen, Pencil, Check, X, ChevronDown, ChevronUp, RefreshCw, AlertCircle, Layers, Blocks, Lightbulb, Users, Heart, TrendingUp, DollarSign, Cpu, Palette, Link2, Cog, MessageSquare, Hammer, Zap, User, ListTodo, Ticket, Plus, History } from 'lucide-react'
+import { FolderOpen, Pencil, Check, X, ChevronDown, ChevronUp, ChevronLeft, ChevronRight, RefreshCw, AlertCircle, Layers, Blocks, Lightbulb, Users, Heart, TrendingUp, DollarSign, Cpu, Palette, Link2, Cog, MessageSquare, Hammer, Zap, User, ListTodo, Ticket, Plus, History } from 'lucide-react'
 import Pusher from 'pusher-js'
 import type { StreamEvent, UserInfo, SessionMetadata, Turn, ToolEvent, Workspace, UserQuestion, Project, ProjectFeature, ProductOwner, ActiveTask, ActiveTicket, WebSocketEvent } from '../../../preload/index.d'
 import { ResizablePanes } from '../components/ResizablePanes'
@@ -115,6 +115,7 @@ export function BuildScreen({ user, onLogout, workingDirectory: initialWorkingDi
   const [activeTasks, setActiveTasks] = useState<ActiveTask[]>([])
   const [activeTickets, setActiveTickets] = useState<ActiveTicket[]>([])
   const [isActiveTasksPanelCollapsed, setIsActiveTasksPanelCollapsed] = useState(false)
+  const [isFeaturesPanelCollapsed, setIsFeaturesPanelCollapsed] = useState(false)
   const [wsNewItemIds, setWsNewItemIds] = useState<Set<string>>(new Set())
   const [wsRemovedItemIds, setWsRemovedItemIds] = useState<Set<string>>(new Set())
   const wsTriggeredReloadRef = useRef(false)
@@ -3069,7 +3070,25 @@ You MUST focus your work within these folders. When reading, writing, editing, o
   })()
 
   // Left pane content
-  const leftPaneContent = (
+  const leftPaneContent = isFeaturesPanelCollapsed ? (
+    <div className="flex h-full w-full flex-col items-center border-r border-brand-border/60 py-3" style={{ background: 'linear-gradient(180deg, rgba(20,20,22,0.95) 0%, rgba(10,10,11,0.98) 100%)' }}>
+      <button
+        onClick={() => setIsFeaturesPanelCollapsed(false)}
+        className="group flex flex-col items-center gap-2 cursor-pointer rounded-lg p-2 transition-all hover:bg-brand-card"
+        title="Expand Features panel"
+      >
+        <div className="flex h-6 w-6 items-center justify-center">
+          <Layers size={14} className="text-brand-purple-soft" />
+        </div>
+        {projectFeatures.length > 0 && (
+          <span className="rounded-full bg-brand-purple/15 px-1.5 py-0.5 text-[10px] font-bold tabular-nums text-brand-purple-soft">
+            {projectFeatures.length}
+          </span>
+        )}
+        <ChevronRight size={12} className="text-brand-text-dim group-hover:text-brand-text-muted" />
+      </button>
+    </div>
+  ) : (
     <div className="flex h-full flex-col" style={{ background: 'linear-gradient(180deg, rgba(20,20,22,0.95) 0%, rgba(10,10,11,0.98) 100%)' }}>
       {/* Header */}
       <div className="border-b border-brand-border/60 px-4 py-3">
@@ -3083,14 +3102,23 @@ You MUST focus your work within these folders. When reading, writing, editing, o
               </span>
             )}
           </div>
-          <button
-            onClick={loadFeatures}
-            disabled={isFeaturesLoading}
-            className="cursor-pointer rounded-md p-1 text-brand-text-dim transition-all hover:bg-brand-card hover:text-brand-text-muted disabled:opacity-40"
-            title="Refresh features"
-          >
-            <RefreshCw size={13} className={isFeaturesLoading ? 'animate-spin' : ''} />
-          </button>
+          <div className="flex items-center gap-1">
+            <button
+              onClick={loadFeatures}
+              disabled={isFeaturesLoading}
+              className="cursor-pointer rounded-md p-1 text-brand-text-dim transition-all hover:bg-brand-card hover:text-brand-text-muted disabled:opacity-40"
+              title="Refresh features"
+            >
+              <RefreshCw size={13} className={isFeaturesLoading ? 'animate-spin' : ''} />
+            </button>
+            <button
+              onClick={() => setIsFeaturesPanelCollapsed(!isFeaturesPanelCollapsed)}
+              className="cursor-pointer rounded-md p-1 text-brand-text-dim transition-all hover:bg-brand-card hover:text-brand-text-muted"
+              title={isFeaturesPanelCollapsed ? "Expand panel" : "Collapse panel"}
+            >
+              <ChevronLeft size={13} className={isFeaturesPanelCollapsed ? 'rotate-180' : ''} />
+            </button>
+          </div>
         </div>
 
         {/* Status summary bar */}
@@ -4009,32 +4037,65 @@ You MUST focus your work within these folders. When reading, writing, editing, o
       <div className="flex-1 overflow-hidden">
         {selectedProject && productOwners.length > 0 ? (
           <ResizablePanes
+            isLeftCollapsed={isActiveTasksPanelCollapsed}
+            collapsedWidth={48}
             leftPane={
-              <div className="flex h-full flex-col overflow-hidden" style={{ background: 'linear-gradient(180deg, rgba(20,20,24,0.97) 0%, rgba(16,16,20,0.99) 100%)' }}>
-                {/* Panel header */}
-                <div className="border-b border-brand-border/60 px-3 py-3">
-                  <div className="flex items-center gap-2">
-                    <div className="flex h-5 w-5 items-center justify-center rounded-md bg-amber-500/15">
-                      <Zap size={11} className="text-amber-400" />
+              isActiveTasksPanelCollapsed ? (
+                <div className="flex h-full w-full flex-col items-center border-r border-brand-border/60 py-3" style={{ background: 'linear-gradient(180deg, rgba(20,20,24,0.97) 0%, rgba(16,16,20,0.99) 100%)' }}>
+                  <button
+                    onClick={() => setIsActiveTasksPanelCollapsed(false)}
+                    className="group flex flex-col items-center gap-2 cursor-pointer rounded-lg p-2 transition-all hover:bg-brand-card"
+                    title="Expand Active Work panel"
+                  >
+                    <div className="flex h-6 w-6 items-center justify-center rounded-md bg-amber-500/15">
+                      <Zap size={13} className="text-amber-400" />
                     </div>
-                    <span className="text-[11px] font-semibold tracking-wide uppercase text-brand-text-secondary">
-                      Active Work
-                    </span>
                     {(() => {
                       const ownerIds = new Set(productOwners.map(o => o.id))
                       const assignedCount = activeTasks.filter(t => t.digital_employee_id && ownerIds.has(t.digital_employee_id)).length
                         + activeTickets.filter(t => t.digital_employee_id && ownerIds.has(t.digital_employee_id)).length
                       return assignedCount > 0 ? (
-                        <span className="rounded-full bg-amber-500/15 px-1.5 py-0.5 text-[10px] font-medium tabular-nums text-amber-400">
+                        <span className="rounded-full bg-amber-500/15 px-1.5 py-0.5 text-[10px] font-bold tabular-nums text-amber-400">
                           {assignedCount}
                         </span>
                       ) : null
                     })()}
-                  </div>
+                    <ChevronRight size={12} className="text-brand-text-dim group-hover:text-brand-text-muted" />
+                  </button>
                 </div>
+              ) : (
+                <div className="flex h-full flex-col overflow-hidden" style={{ background: 'linear-gradient(180deg, rgba(20,20,24,0.97) 0%, rgba(16,16,20,0.99) 100%)' }}>
+                  {/* Panel header */}
+                  <div className="border-b border-brand-border/60 px-3 py-3">
+                    <div className="flex items-center gap-2">
+                      <div className="flex h-5 w-5 items-center justify-center rounded-md bg-amber-500/15">
+                        <Zap size={11} className="text-amber-400" />
+                      </div>
+                      <span className="text-[11px] font-semibold tracking-wide uppercase text-brand-text-secondary">
+                        Active Work
+                      </span>
+                      {(() => {
+                        const ownerIds = new Set(productOwners.map(o => o.id))
+                        const assignedCount = activeTasks.filter(t => t.digital_employee_id && ownerIds.has(t.digital_employee_id)).length
+                          + activeTickets.filter(t => t.digital_employee_id && ownerIds.has(t.digital_employee_id)).length
+                        return assignedCount > 0 ? (
+                          <span className="rounded-full bg-amber-500/15 px-1.5 py-0.5 text-[10px] font-medium tabular-nums text-amber-400">
+                            {assignedCount}
+                          </span>
+                        ) : null
+                      })()}
+                      <button
+                        onClick={() => setIsActiveTasksPanelCollapsed(!isActiveTasksPanelCollapsed)}
+                        className="ml-auto cursor-pointer rounded-md p-1 text-brand-text-dim transition-all hover:bg-brand-card hover:text-brand-text-muted"
+                        title={isActiveTasksPanelCollapsed ? "Expand panel" : "Collapse panel"}
+                      >
+                        <ChevronLeft size={13} className={isActiveTasksPanelCollapsed ? 'rotate-180' : ''} />
+                      </button>
+                    </div>
+                  </div>
 
-                {/* Employee sections with their tasks/tickets */}
-                <div className="flex-1 overflow-y-auto px-3 py-3">
+                  {/* Employee sections with their tasks/tickets */}
+                  <div className="flex-1 overflow-y-auto px-3 py-3">
                   <div className="flex flex-col gap-4">
                     {productOwners.map(owner => {
                       const ownerTasks = activeTasks.filter(t => t.digital_employee_id === owner.id)
@@ -4156,9 +4217,12 @@ You MUST focus your work within these folders. When reading, writing, editing, o
                   </div>
                 </div>
               </div>
+              )
             }
             rightPane={
               <ResizablePanes
+                isLeftCollapsed={isFeaturesPanelCollapsed}
+                collapsedWidth={48}
                 leftPane={leftPaneContent}
                 rightPane={rightPaneContent}
                 defaultLeftWidth={300}
@@ -4172,6 +4236,8 @@ You MUST focus your work within these folders. When reading, writing, editing, o
           />
         ) : (
           <ResizablePanes
+            isLeftCollapsed={isFeaturesPanelCollapsed}
+            collapsedWidth={48}
             leftPane={leftPaneContent}
             rightPane={rightPaneContent}
             defaultLeftWidth={300}
