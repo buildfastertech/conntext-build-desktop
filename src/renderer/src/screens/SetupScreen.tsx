@@ -23,20 +23,26 @@ export function SetupScreen({ onComplete, onBack, userName, user, workspaces = [
     setError('')
 
     const trimmedKey = apiKey.trim()
-    if (!trimmedKey.startsWith('sk-ant-')) {
-      setError('Invalid key format. Anthropic keys start with sk-ant-')
-      return
-    }
 
-    setIsLoading(true)
+    if (trimmedKey) {
+      if (!trimmedKey.startsWith('sk-ant-')) {
+        setError('Invalid key format. Anthropic keys start with sk-ant-')
+        return
+      }
 
-    try {
-      await window.api.saveAnthropicKey(trimmedKey)
+      setIsLoading(true)
+
+      try {
+        await window.api.saveAnthropicKey(trimmedKey)
+        onComplete()
+      } catch {
+        setError('Failed to save API key')
+      } finally {
+        setIsLoading(false)
+      }
+    } else {
+      await window.api.clearAnthropicKey()
       onComplete()
-    } catch {
-      setError('Failed to save API key')
-    } finally {
-      setIsLoading(false)
     }
   }
 
@@ -71,7 +77,7 @@ export function SetupScreen({ onComplete, onBack, userName, user, workspaces = [
           <h1 className="mb-2 text-xl font-semibold text-brand-text">Connect your AI</h1>
           <p className="text-[13px] leading-relaxed text-brand-text-dim">
             ConnText Build uses Claude to write code locally on your machine.
-            You'll need an Anthropic API key to get started.
+            An Anthropic API key is optional but recommended for full functionality.
           </p>
         </div>
 
@@ -80,7 +86,7 @@ export function SetupScreen({ onComplete, onBack, userName, user, workspaces = [
           <form onSubmit={handleSubmit} className="space-y-4">
             <div>
               <label className="mb-1.5 block text-[12px] font-medium uppercase tracking-wider text-brand-text-dim">
-                Anthropic API Key
+                Anthropic API Key <span className="normal-case font-normal text-brand-text-dim/60">(optional)</span>
               </label>
               <div className="relative">
                 <input
@@ -88,7 +94,6 @@ export function SetupScreen({ onComplete, onBack, userName, user, workspaces = [
                   value={apiKey}
                   onChange={(e) => setApiKey(e.target.value)}
                   placeholder="sk-ant-..."
-                  required
                   autoFocus
                   className="w-full rounded-lg border border-brand-input-border bg-brand-input px-3.5 py-2.5 pr-10 font-mono text-[13px] text-brand-text placeholder-brand-text-dim/60 outline-none transition-all duration-200 focus:border-brand-input-focus focus:ring-1 focus:ring-brand-input-focus/30"
                 />
@@ -131,10 +136,10 @@ export function SetupScreen({ onComplete, onBack, userName, user, workspaces = [
 
             <button
               type="submit"
-              disabled={isLoading || !apiKey.trim()}
+              disabled={isLoading}
               className="w-full cursor-pointer rounded-lg bg-brand-purple px-4 py-2.5 text-[14px] font-medium text-white transition-all duration-200 hover:bg-brand-purple-dim disabled:cursor-not-allowed disabled:opacity-40"
             >
-              {isLoading ? 'Saving...' : 'Continue'}
+              {isLoading ? 'Saving...' : apiKey.trim() ? 'Continue' : 'Skip for now'}
             </button>
           </form>
 

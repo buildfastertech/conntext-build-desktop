@@ -47,7 +47,7 @@ export function App() {
       const authed = !!credentials
       setIsAuthenticated(authed)
       setUser(credentials?.user ?? null)
-      setHasAnthropicKey(!!anthropicKey)
+      setHasAnthropicKey(!!anthropicKey || localStorage.getItem('setupComplete') === 'true')
 
       // Fetch workspaces before finishing load so the UI doesn't flash
       if (authed && credentials) {
@@ -159,6 +159,7 @@ export function App() {
     localStorage.removeItem('selectedModel')
     localStorage.removeItem('activeFolders')
     localStorage.removeItem('chosenFolders')
+    localStorage.removeItem('setupComplete')
     setIsAuthenticated(false)
     setHasAnthropicKey(false)
     setUser(null)
@@ -216,7 +217,10 @@ export function App() {
           <SetupScreen
             userName={user?.name ?? 'User'}
             user={user}
-            onComplete={() => setHasAnthropicKey(true)}
+            onComplete={() => {
+              localStorage.setItem('setupComplete', 'true')
+              setHasAnthropicKey(true)
+            }}
             onBack={() => {
               window.api.clearCredentials()
               setIsAuthenticated(false)

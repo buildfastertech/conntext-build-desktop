@@ -5,7 +5,7 @@ interface LoginScreenProps {
 }
 
 export function LoginScreen({ onAuthenticated }: LoginScreenProps) {
-  const [apiUrl, setApiUrl] = useState('https://conntext.test')
+  const [apiUrl, setApiUrl] = useState('https://conntext.app')
   const [email, setEmail] = useState('')
   const [password, setPassword] = useState('')
   const [showPassword, setShowPassword] = useState(false)
@@ -206,7 +206,7 @@ export function LoginScreen({ onAuthenticated }: LoginScreenProps) {
                   type="url"
                   value={apiUrl}
                   onChange={(e) => setApiUrl(e.target.value)}
-                  placeholder="https://conntext.test"
+                  placeholder="https://conntext.app"
                   required
                   className="w-full rounded-lg border border-brand-input-border bg-brand-input px-3.5 py-2.5 text-[13px] font-mono text-brand-text-muted placeholder-brand-text-dim/60 outline-none transition-all duration-200 focus:border-brand-input-focus focus:ring-1 focus:ring-brand-input-focus/30"
                 />
